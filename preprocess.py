@@ -17,7 +17,7 @@ datafile = h5py.File(sys.argv[2], 'w')
 dataset = datafile.create_dataset('data', shape=(0, sr),
                                   maxshape=(None, sr), dtype='float32',
                                   compression='gzip')
-
+samples = 0
 with open(sys.argv[3]) as filelist:
     for f in filelist:
         print f.strip()
@@ -29,7 +29,9 @@ with open(sys.argv[3]) as filelist:
                 old_shape = dataset.shape[0]
                 dataset.resize(old_shape + len(data), axis=0)
                 dataset[old_shape:] = data
+                samples += len(data)
                 data = []
+                print '%d samples' % samples
 
 if len(data) > 0:
     old_shape = dataset.shape[0]
