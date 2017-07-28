@@ -11,7 +11,7 @@ thres = float(sys.argv[1])
 if len(sys.argv) > 4:
     sr = int(sys.argv[4])
 else:
-    sr = sr
+    sr = 8000
 
 datafile = h5py.File(sys.argv[2], 'w')
 dataset = datafile.create_dataset('data', shape=(0, sr),
@@ -22,7 +22,6 @@ with open(sys.argv[3]) as filelist:
     for f in filelist:
         print f.strip()
         x, _ = librosa.core.load(f.strip(), sr=sr)
-        print x.shape
         for i in range(0, x.shape[0] - sr + 1):
             if (NP.abs(x[i:i+sr]) > thres).sum() > sr / 2:
                 data.append(x[i:i+sr])
