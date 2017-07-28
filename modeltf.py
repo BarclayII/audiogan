@@ -79,7 +79,7 @@ class Conv1DDiscriminator(util.Component):
         self.model = KM.Model(inputs=_x, outputs=_d)
 
     def discriminate(self, x):
-        return self.model(x)[:, 0] + self.model(x[:, :4000])[:, 0] + self.model(x[:, 4000:])[:, 0]
+        return self.model(x)[:, 0]
 
     def compare(self, x_real, x_fake, grad_penalty=True, lambda_=10):
         d_real = self.discriminate(x_real)
