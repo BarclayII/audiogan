@@ -8,8 +8,6 @@ import keras.layers as KL
 import keras.models as KM
 import keras.activations as KA
 
-import layers
-
 import utiltf as util
 
 class RNNGenerator(util.Component):
@@ -46,15 +44,10 @@ class Conv1DGenerator(util.Component):
         self._multiplier = 1
         self._noise_size = noise_size
         for num_filters, filter_size, filter_stride in config:
-            _x1 = KL.Conv2DTranspose(filters=num_filters, kernel_size=(1, filter_size), strides=(1, filter_stride), padding='same')(_x1)
-            if not old:
-                _x1 = KL.LeakyReLU()(_x1)
-            else:
-                _x1 = KL.Activation('relu')(_x1)
+            _x1 = KL.Conv2DTranspose(filters=num_filters, kernel_size=(1, filter_size), strides=(1, filter_stride), padding='same', kernel_initializer='random_uniform')(_x1)
+            _x1 = KL.LeakyReLU()(_x1)
             self._multiplier *= filter_stride
         _x1 = KL.Conv2DTranspose(filters=1, kernel_size=(1, 1), strides=(1, 1), padding='same')(_x1)
-        if not old:
-            _x1 = layers.Scale()(_x1)
         _x1 = KL.Activation('tanh')(_x1)
         _pooled = KL.Lambda(lambda x: x[:, 0, :, 0])(_x1)
 
@@ -65,21 +58,12 @@ class Conv1DGenerator(util.Component):
             z = K.random_normal((batch_size, self._noise_size))
         return self.model(z)
 
-class Conv1DDiscriminator(util.Component):
-    def __init__(self, config):
-        super(Conv1DDiscriminator, self).__init__()
-
-        _x = KL.Input(shape=(None,))
-        _x1 = KL.Lambda(lambda x: K.expand_dims(x, 2))(_x)
-        for num_filters, filter_size, filter_stride in config:
-            _x1 = KL.Conv1D(filters=num_filters, kernel_size=filter_size, strides=filter_stride, padding='same', activation='relu')(_x1)
-        _pooled = KL.GlobalAvgPool1D()(_x1)
-        _d = KL.Dense(1)(_pooled)
-
-        self.model = KM.Model(inputs=_x, outputs=_d)
+class Discriminator(util.Component):
+    def __init__(self):
+        super(Discriminator, self).__init__()
 
     def discriminate(self, x):
-        return self.model(x)[:, 0]
+        raise NotImplementedError
 
     def compare(self, x_real, x_fake, grad_penalty=True, lambda_=10):
         d_real = self.discriminate(x_real)
@@ -98,3 +82,38 @@ class Conv1DDiscriminator(util.Component):
         else:
             penalty = K.constant(0)
         return K.mean(loss), d_real, d_fake, penalty
+
+class RNNDiscriminator(Discriminator):
+    def __init__(self, frame_size=200, state_size=100, num_frames=40):
+        super(RNNDiscriminator, self).__init__()
+
+        self._frame_size = frame_size
+        self._state_size = state_size
+        self._num_frames = num_frames
+
+        _x = KL.Input(shape=(num_frames, frame_size))
+        _lstm = KL.Bidirectional(KL.LSTM(units=state_size, activation='tanh', return_sequences=False, unroll=True))(_x)
+        _d = KL.Dense(1)(_lstm)
+
+        self.model = KM.Model(inputs=_x, outputs=_d)
+
+    def discriminate(self, x):
+        x = K.reshape(x, (K.shape(x)[0], self._num_frames, self._frame_size))
+        return self.model(x)[:, 0]
+
+class Conv1DDiscriminator(Discriminator):
+    def __init__(self, config):
+        super(Conv1DDiscriminator, self).__init__()
+
+        _x = KL.Input(shape=(None,))
+        _x1 = KL.Lambda(lambda x: K.expand_dims(x, 2))(_x)
+        for num_filters, filter_size, filter_stride in config:
+            _x1 = KL.Conv1D(filters=num_filters, kernel_size=filter_size, strides=filter_stride, padding='valid')(_x1)
+            _x1 = KL.LeakyReLU()(_x1)
+        _pooled = KL.GlobalAvgPool1D()(_x1)
+        _d = KL.Dense(1)(_pooled)
+
+        self.model = KM.Model(inputs=_x, outputs=_d)
+
+    def discriminate(self, x):
+        return self.model(x)[:, 0]
