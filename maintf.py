@@ -2,6 +2,7 @@
 import tensorflow as TF
 import modeltf as model
 import utiltf as util
+from keras import backend as K
 
 import numpy as NP
 import numpy.random as RNG
@@ -19,6 +20,7 @@ parser.add_argument('--cnng', action='store_true', default=True)
 parser.add_argument('--rnng', action='store_true',default=False)
 parser.add_argument('--cnnd', action='store_true',default=True)
 parser.add_argument('--rnnd', action='store_true',default=False)
+parser.add_argument('--resnet', action='store_true',default=True)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--amplitudes', type=int, default=8000, help='# of amplitudes to generate')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
@@ -54,9 +56,7 @@ if args.cnng:
         (512, 5, 1),
         (512, 5, 1),
         (512, 5, 5),
-#        (1024, 33, 2),
-#        (2048, 33, 5),
-        ])
+        ], resnet = args.resnet)
     z = TF.placeholder(TF.float32, shape=(None, None))
     z_fixed = RNG.randn(batch_size, args.noisesize)
 elif args.rnng:
@@ -83,7 +83,7 @@ if args.cnnd:
         ])
 elif args.rnnd:
     d_global = model.RNNDiscriminator()
-    d_global = model.RNNDiscriminator()
+    d_local = model.RNNDiscriminator()
 else:
     print 'Specify either --cnnd or --rnnd'
     sys.exit(1)
@@ -189,7 +189,8 @@ if __name__ == '__main__':
     d_train_writer.add_graph(s.graph)
     g_writer.add_graph(s.graph)
     s.run(TF.global_variables_initializer())
-    x_gen = s.run(x, feed_dict={z: z_fixed})
+    x_gen = s.run(x, feed_dict={z: z_fixed,
+                                K.learning_phase():0})
     assert x_gen.shape[0] == batch_size
     assert x_gen.shape[1] == args.amplitudes
     while True:
@@ -199,28 +200,34 @@ if __name__ == '__main__':
             with Timer.new('load', print_=False):
                 epoch, batch_id, real_data = dataloader.next()
             with Timer.new('train_d', print_=False):
-                _, loss, d_sum = s.run([train_d, loss_d_global, d_summaries], feed_dict={x_global_real: real_data, lambda_: l})
+                _, loss, d_sum = s.run([train_d, loss_d_global, d_summaries], 
+                                       feed_dict={x_global_real: real_data, lambda_: l,
+                                                  K.learning_phase():1})
             print 'D', epoch, batch_id, loss, Timer.get('load'), Timer.get('train_d')
             d_train_writer.add_summary(d_sum, i * args.critic_iter + j + 1)
         i += 1
 
         _, _, real_data = dataloader_val.next()
-        loss, d_sum = s.run([loss_d_global, d_summaries], feed_dict={x_global_real: real_data, lambda_: l})
+        loss, d_sum = s.run([loss_d_global, d_summaries],
+                            feed_dict={x_global_real: real_data, lambda_: l,
+                                       K.learning_phase():0})
         print 'D-valid', loss
         d_valid_writer.add_summary(d_sum, i * args.critic_iter)
 
         with Timer.new('train_g', print_=False):
-            _, loss, g_sum = s.run([train_g, loss_g_global, g_summaries])
+            _, loss, g_sum = s.run([train_g, loss_g_global, g_summaries],
+                                    {K.learning_phase():1})
         print 'G', i, loss, Timer.get('train_g')
         g_writer.add_summary(g_sum, i * args.critic_iter)
 
-        _ = s.run(x_global_fake)
+        _ = s.run(x_global_fake, {K.learning_phase():0})
         if NP.any(NP.isnan(_)):
             print 'NaN generated'
             sys.exit(0)
         if i % 50 == 0:
             print 'Saving...'
-            x_gen, x_sum = s.run([x, audio_gen], feed_dict={z: z_fixed})
+            x_gen, x_sum = s.run([x, audio_gen], feed_dict={z: z_fixed,
+                                                            K.learning_phase(): 0})
             g_writer.add_summary(x_sum, i * args.critic_iter)
             if i % 1000 == 0:
                 NP.save('%s%05d.npy' % (args.modelname, i), x_gen)
