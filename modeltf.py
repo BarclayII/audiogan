@@ -50,20 +50,26 @@ class Model(object):
                 scope=self.name
                 )
 
-    def __call__(self, **kwargs):
+    def get_trainable_weights(self, **kwargs):
+        return TF.get_collection(
+                TF.GraphKeys.TRAINABLE_VARIABLES,
+                scope=self.name
+                )
+
+    def __call__(self, *args, **kwargs):
         with TF.variable_scope(self.name, reuse=self.built):
-            result = self.call(**kwargs)
+            result = self.call(*args, **kwargs)
             self.built = True
         return result
 
-    def call(self, **kwargs):
+    def call(self, *args, **kwargs):
         raise NotImplementedError
 
 # Joint Embedding Mixers
 
 class Mixer(Model):
-    def mix(self, **kwargs):
-        return self(**kwargs)
+    def mix(self, *args, **kwargs):
+        return self(*args, **kwargs)
 
 
 class MultiplyMixer(Mixer):
@@ -83,8 +89,8 @@ class ConcatMixer(Mixer):
 # Generators
 
 class Generator(Model):
-    def generate(self, **kwargs):
-        return self(**kwargs)
+    def generate(self, *args, **kwargs):
+        return self(*args, **kwargs)
 
 
 class RNNGenerator(Generator):
@@ -94,7 +100,7 @@ class RNNGenerator(Generator):
                  frame_size=200,        # # of amplitudes to generate at a time
                  noise_size=100,        # noise dimension at a time
                  state_size=100,
-                 bidirectional=False,
+                 bidirectional=True,
                  cell=ProjectedLSTMCell,
                  **kwargs):
         super(RNNGenerator, self).__init__(**kwargs)
@@ -322,8 +328,8 @@ class ResNetGenerator(Conv1DGenerator):
 
 
 class Discriminator(Model):
-    def discriminate(self, x, c=None, **kwargs):
-        return self(x, c=c, **kwargs)
+    def discriminate(self, *args, **kwargs):
+        return self(*args, **kwargs)
 
 
 class WGANCritic(Discriminator):
@@ -333,7 +339,7 @@ class WGANCritic(Discriminator):
     def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
         eps = K.random_uniform([K.shape(x_real)[0], 1])
         x_inter = eps * x_real + (1 - eps) * x_fake
-        d_inter, _ = self.discriminate(x_inter, **kwargs)
+        d_inter, _ = self.discriminate(x_inter, c=c, **kwargs)
 
         grads = K.gradients(d_inter, x_inter)[0]
         grad_norms = K.sqrt(K.sum(K.square(grads), axis=1))
@@ -347,11 +353,10 @@ class WGANCritic(Discriminator):
                 grad_penalty=True,
                 lambda_=10,
                 c=None,
-                mode='unconditional'):
-        # mode: 'unconditional', 'conditional_input', 'auxiliary_prediction'
-        uncond = mode == 'unconditional'
+                mode='unconditional',
+                **kwargs):
+        # mode: 'unconditional', 'conditional_input'
         cond_input = mode == 'conditional_input'
-        aux_pred = mode == 'auxiliary_prediction'
 
         d_real, d_real_pred = self.discriminate(
                 x_real, c=c if cond_input else None)
@@ -372,28 +377,35 @@ class RNNDiscriminator(WGANCritic):
     def __init__(self,
                  frame_size=200,
                  state_size=100,
-                 length=8000,
+                 cell=TF.nn.rnn_cell.LSTMCell,
                  **kwargs):
         super(RNNDiscriminator, self).__init__(**kwargs)
 
         self._frame_size = frame_size
         self._state_size = state_size
-        self._num_frames = num_frames = length // frame_size
+        self._cell = cell
 
-    def call(self, x, c=None, **kwargs):
-        _x = TF.reshape(x, (-1, self._num_frames, self._frame_size))
+    def call(self, x, c=None, sum_=True, **kwargs):
+        batch_size = TF.shape(x)[0]
+        _x = TF.reshape(x, (batch_size, -1, self._frame_size))
         if c is not None:
             c = TF.tile(TF.expand_dims(c, 1), (1, num_frames, 1))
             _x = TF.concatenate([_x, c], axis=2)
 
-        _lstm = KL.Bidirectional(
-                KL.LSTM(
-                    units=state_size, activation='tanh',
-                    return_sequences=False, unroll=True)
-                )(_x)
-        _d = KL.Dense(1)(_lstm)
+        lstm_f = self._cell(self._state_size)
+        lstm_b = self._cell(self._state_size)
 
-        return _d[:, 0], None
+        h_f = TF.nn.dynamic_rnn(lstm_f, _x, dtype=TF.float32, scope='rnn_f')
+        h_b = TF.nn.dynamic_rnn(lstm_b, _x, dtype=TF.float32, scope='rnn_b')
+        h = TF.concat([h_f, h_b], axis=2)
+        h_size = 2 * self._state_size
+
+        w = TF.get_variable('w', shape=(h_size,), dtype=TF.float32)
+        b = TF.get_variable('b', shape=(), dtype=TF.float32)
+        d = TF.matmul(TF.reshape(h, (-1, h_size)), TF.reshape(w, (h_size, 1)))
+        d = TF.reshape(d, (batch_size, -1))
+
+        return d if not sum_ else TF.reduce_sum(d, axis=1), None
 
 
 class Conv1DDiscriminator(WGANCritic):
@@ -414,3 +426,60 @@ class Conv1DDiscriminator(WGANCritic):
         d = KL.Dense(1)(pooled)
 
         return d[:, 0]
+
+
+class RNNTimeDistributedDiscriminator(RNNDiscriminator):
+    def grad_penalty(self, x_real, x_fake, c=None, approx=True, **kwargs):
+        eps = K.random_uniform([K.shape(x_real)[0], 1])
+        x_inter = eps * x_real + (1 - eps) * x_fake
+
+        if approx:
+            d_inter, _ = self.discriminate(x_inter, c=c, **kwargs)
+
+            grads = K.gradients(d_inter, x_inter)[0]
+            grad_norms = K.sqrt(K.sum(K.square(grads), axis=1))
+            penalty = K.square(grad_norms - 1)
+        else:
+            d_inter, _ = self.discriminate(x_inter, c=c, sum_=False, **kwargs)
+            penalty = 0
+
+            for i in range(self._num_frames):
+                grads = K.gradients(d_inter[:, i], x_inter)[0]
+                grad_norms = K.sqrt(K.sum(K.square(grads), axis=1))
+                penalty += K.square(grad_norms - 1)
+
+        return penalty
+
+
+class LocalDiscriminatorWrapper(WGANCritic):
+    '''
+    Discriminates a chunk of audio.
+    Usage:
+    If you want to use the same discriminator for both local chunk and global:
+    >>> d = RNNDiscriminator()
+    >>> d_local = LocalDiscriminatorWrapper(d)
+    >>> d_loss, _, _, _, _, _ = d_local.compare(x_real, x_fake)
+
+    If you want a separate one, just do something like
+    >>> d = LocalDiscrimiatorWrapper(RNNDiscriminator())
+    '''
+    def __init__(self,
+                 discriminator,
+                 frame_size=200,
+                 min_size=None,
+                 max_size=None,
+                 **kwargs):
+        super(LocalDiscriminatorWrapper, self).__init__(**kwargs)
+
+        self._d = discriminator
+        self._frame_size = frame_size
+        self._min_size = min_size or frame_size
+        self._max_size = max_size
+
+    def call(self, x, c=None, **kwargs):
+        min_frames = self._min_size // self._frame_size
+        max_frames = (self._max_size or TF.shape(x)[1]) // self._frame_size
+        local_size = TF.random_uniform(
+                (), minval=min_frames, maxval=max_frames + 1)
+        x_crop = TF.random_crop(x, size=[TF.shape(x)[0], local_size])
+        return self._d(x_crop, c=c, **kwargs)
