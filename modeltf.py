@@ -32,7 +32,7 @@ class Model(object):
 
     @property
     def saver(self):
-        if not hasattr(self, _saver):
+        if not hasattr(self, '_saver'):
             self._saver = TF.train.Saver()
         return self._saver
 
