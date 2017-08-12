@@ -9,6 +9,7 @@ import keras.models as KM
 import keras.activations as KA
 
 from cells import Conv2DLSTMCell, ProjectedLSTMCell, FeedbackMultiLSTMCell
+from utiltf import AutoUpdate
 
 session = None
 
