@@ -123,3 +123,56 @@ class ProjectedLSTMCell(TF.nn.rnn_cell.LSTMCell):
         c, h = state
         h = self._projection_activation(h)
         return h, TF.nn.rnn_cell.LSTMStateTuple(c, h)
+
+class FeedbackMultiLSTMCell(TF.nn.rnn_cell.RNNCell):
+    def __init__(self,
+                 num_units,
+                 num_proj,
+                 num_layers=1,
+                 activation=TF.tanh,
+                 reuse=None,
+                 **kwargs):
+        super(FeedbackMultiLSTMCell, self).__init__(_reuse=reuse)
+        self._cells = []
+        self.num_proj = num_proj
+        self.num_units = num_units
+        self.num_layers = num_layers
+        for i in range(num_layers):
+            if i == num_layers - 1:
+                self._cells.append(
+                        ProjectedLSTMCell(
+                            num_units, num_proj, activation,
+                            **kwargs)
+                        )
+            else:
+                self._cells.append(TF.nn.rnn_cell.LSTMCell(num_units, **kwargs))
+
+    @property
+    def output_size(self):
+        return self.num_proj
+
+    @property
+    def state_size(self):
+        return [c.state_size for c in self._cells] + [self.num_proj]
+
+    def call(self, inputs, state):
+        y = state[-1]
+        x = TF.concat([inputs, y], axis=1)
+        new_state = []
+        for i in range(self.num_layers):
+            with TF.variable_scope('cell-%d' % i):
+                x, s = self._cells[i](x, state[i])
+                new_state.append(s)
+        new_state.append(x)
+        return x, new_state
+
+    def random_state(self, batch_size, dtype):
+        h = self.zero_state(batch_size, dtype)
+        new_h = []
+        for _h in h:
+            if isinstance(_h, tuple):
+                new_h.append(
+                        tuple(TF.random_normal(TF.shape(__h)) for __h in _h))
+            else:
+                new_h.append(TF.random_normal(TF.shape(_h)))
+        return new_h

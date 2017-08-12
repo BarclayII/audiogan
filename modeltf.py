@@ -8,7 +8,7 @@ import keras.layers as KL
 import keras.models as KM
 import keras.activations as KA
 
-from cells import Conv2DLSTMCell, ProjectedLSTMCell
+from cells import Conv2DLSTMCell, ProjectedLSTMCell, FeedbackMultiLSTMCell
 
 session = None
 
@@ -23,7 +23,7 @@ def run(*args, **kwargs):
 
 class Model(object):
     count = 0
-    def __init__(self, name=None):
+    def __init__(self, name=None, **kwargs):
         super(Model, self).__init__()
 
         self.name = name if name is not None else 'model-' + str(Model.count)
@@ -99,9 +99,9 @@ class RNNGenerator(Generator):
     def __init__(self,
                  frame_size=200,        # # of amplitudes to generate at a time
                  noise_size=100,        # noise dimension at a time
-                 state_size=100,
-                 bidirectional=True,
-                 cell=ProjectedLSTMCell,
+                 state_size=200,
+                 num_layers=1,
+                 cell=FeedbackMultiLSTMCell,
                  **kwargs):
         super(RNNGenerator, self).__init__(**kwargs)
 
@@ -109,40 +109,36 @@ class RNNGenerator(Generator):
         self._noise_size = noise_size
         self._state_size = state_size
         self._cell = cell
-        self._bidirectional = bidirectional
+        self._num_layers = num_layers
 
-    def call(self, batch_size=None, length=None, z=None, hf=None, hb=None):
+    def call(self, batch_size=None, length=None, z=None, hf=None):
         frame_size = self._frame_size
         noise_size = self._noise_size
         state_size = self._state_size
         cell = self._cell
 
-        lstm_f = cell(state_size, num_proj=frame_size, activation=TF.tanh)
-        lstm_b = cell(state_size, num_proj=frame_size, activation=TF.tanh)
+        lstm_f = cell(
+                state_size, num_proj=frame_size, activation=TF.tanh,
+                num_layers=self._num_layers)
 
-        if z is None and hf is None and hb is None:
+        if z is None:
             nframes = length // frame_size
             z = TF.random_normal((batch_size, nframes, noise_size))
+        else:
+            batch_size = TF.shape(z)[0]
 
-            _hf = lstm_f.zero_state(batch_size, TF.float32)
-            _hb = lstm_b.zero_state(batch_size, TF.float32)
-            hf = tuple(TF.random_normal(TF.shape(h)) for h in _hf)
-            hb = tuple(TF.random_normal(TF.shape(h)) for h in _hb)
+        if hf is None:
+            hf = lstm_f.random_state(batch_size, TF.float32)
 
         z_unstack = TF.unstack(TF.transpose(z, (1, 0, 2)))
 
-        if self._bidirectional:
-            x = TF.nn.static_bidirectional_rnn(
-                    lstm_f, lstm_b, z_unstack, dtype=TF.float32,
-                    initial_state_fw=hf, initial_state_bw=hb,
-                    )
-        else:
-            x = TF.nn.static_rnn(
-                    lstm_f, z_unstack, dtype=TF.float32,
-                    initial_state=hf,
-                    )
+        x = TF.nn.static_rnn(
+                lstm_f, z_unstack, dtype=TF.float32,
+                initial_state=hf,
+                )[0]
+        x = TF.concat(x, axis=1)
 
-        return TF.concat(x[0], axis=1)
+        return x
 
 
 class Conv1DGenerator(Generator):
@@ -183,7 +179,6 @@ class Conv2DRNNGenerator(Generator):
                  noise_size,
                  kernel_size,
                  filters,
-                 bidirectional=False,
                  cell=Conv2DLSTMCell):
         super(Conv2DRNNGenerator, self).__init__()
 
@@ -191,7 +186,6 @@ class Conv2DRNNGenerator(Generator):
         self._kernel_size = kernel_size
         self._filters = filters
         self._cell = cell
-        self._bidirectional = bidirectional
 
     def call(self, batch_size=None, length=None, z=None, hf=None, hb=None):
         noise_size = self._noise_size
@@ -214,34 +208,21 @@ class Conv2DRNNGenerator(Generator):
                 post_rnn_callback=post_rnn_callback,
                 output_shape=(1, self._noise_size, 1),
                 )
-        lstm_b = cell(
-                (1, frame_size), filters, (1, kernel_size),
-                post_rnn_callback=post_rnn_callback,
-                output_shape=(1, self._noise_size, 1),
-                )
 
         if z is None and hf is None and hb is None:
             z = TF.random_normal((batch_size, num_frames, 1, noise_size, 1))
 
             _hf = lstm_f.zero_state(batch_size, TF.float32)
-            _hb = lstm_b.zero_state(batch_size, TF.float32)
             hf = tuple(TF.random_normal(TF.shape(h)) for h in _hf)
-            hb = tuple(TF.random_normal(TF.shape(h)) for h in _hb)
 
         z_unstack = TF.unstack(TF.transpose(z, (1, 0, 2, 3, 4)))
 
-        if self._bidirectional:
-            x = TF.nn.static_bidirectional_rnn(
-                    lstm_f, lstm_b, z_unstack, dtype=TF.float32,
-                    initial_state_fw=hf, initial_state_bw=hb,
-                    )
-        else:
-            x = TF.nn.static_rnn(
-                    lstm_f, z_unstack, dtype=TF.float32,
-                    initial_state=hf,
-                    )
+        x = TF.nn.static_rnn(
+                lstm_f, z_unstack, dtype=TF.float32,
+                initial_state=hf,
+                )[0]
+        x = TF.concat(x, axis=2)[:, 0, :, 0]
 
-        x = TF.concat(x[0], axis=2)[:, 0, :, 0]
         return x
 
 
@@ -253,7 +234,7 @@ class ResNetGenerator(Conv1DGenerator):
     def build_conv(self, x):
         last_num_filters = 0
 
-        for num_filters, filter_size, filter_stride in config:
+        for num_filters, filter_size, filter_stride in self.config:
             if filter_stride == 1 and num_filters == last_num_filters:
                 x = self._residual_block(
                         x, filter_size, num_filters // 2, num_filters)
@@ -377,6 +358,8 @@ class RNNDiscriminator(WGANCritic):
     def __init__(self,
                  frame_size=200,
                  state_size=100,
+                 length=8000,
+                 num_layers=1,
                  cell=TF.nn.rnn_cell.LSTMCell,
                  **kwargs):
         super(RNNDiscriminator, self).__init__(**kwargs)
@@ -384,28 +367,44 @@ class RNNDiscriminator(WGANCritic):
         self._frame_size = frame_size
         self._state_size = state_size
         self._cell = cell
+        self._length = length
+        self._num_layers = num_layers
 
-    def call(self, x, c=None, sum_=True, **kwargs):
+    def _rnn(self, x, c=None, **kwargs):
         batch_size = TF.shape(x)[0]
-        _x = TF.reshape(x, (batch_size, -1, self._frame_size))
+        nframes = self._length // self._frame_size
+        _x = TF.reshape(x, (batch_size, nframes, self._frame_size))
         if c is not None:
             c = TF.tile(TF.expand_dims(c, 1), (1, num_frames, 1))
             _x = TF.concatenate([_x, c], axis=2)
 
-        lstm_f = self._cell(self._state_size)
-        lstm_b = self._cell(self._state_size)
+        lstms_f = []
+        lstms_b = []
+        for _ in range(self._num_layers):
+            lstms_f.append(self._cell(self._state_size))
+            lstms_b.append(self._cell(self._state_size))
 
-        h_f = TF.nn.dynamic_rnn(lstm_f, _x, dtype=TF.float32, scope='rnn_f')
-        h_b = TF.nn.dynamic_rnn(lstm_b, _x, dtype=TF.float32, scope='rnn_b')
-        h = TF.concat([h_f, h_b], axis=2)
+        x_unstack = TF.unstack(TF.transpose(_x, (1, 0, 2)))
+
+        outputs, state_fw, state_bw = TF.contrib.rnn.stack_bidirectional_rnn(
+                lstms_f, lstms_b, x_unstack, dtype=TF.float32)
+        h = TF.concat(outputs, axis=1)
+        h_fw = state_fw[0][1]
+        h_bw = state_bw[0][1]
+        return h, h_fw, h_bw
+
+    def call(self, x, c=None, **kwargs):
+        batch_size = TF.shape(x)[0]
+        _, h_fw, h_bw = self._rnn(x, c=c, **kwargs)
+        h = TF.concat([h_fw, h_bw], axis=1)
         h_size = 2 * self._state_size
 
         w = TF.get_variable('w', shape=(h_size,), dtype=TF.float32)
         b = TF.get_variable('b', shape=(), dtype=TF.float32)
-        d = TF.matmul(TF.reshape(h, (-1, h_size)), TF.reshape(w, (h_size, 1)))
-        d = TF.reshape(d, (batch_size, -1))
+        d = TF.matmul(TF.reshape(h, (batch_size, h_size)),
+                      TF.reshape(w, (h_size, 1))) + b
 
-        return d if not sum_ else TF.reduce_sum(d, axis=1), None
+        return d[:, 0], None
 
 
 class Conv1DDiscriminator(WGANCritic):
@@ -416,24 +415,52 @@ class Conv1DDiscriminator(WGANCritic):
 
     def call(self, x, c=None, **kwargs):
         x1 = K.expand_dims(x, 2)
-        for num_filters, filter_size, filter_stride in config:
+        for num_filters, filter_size, filter_stride in self.config:
             x1 = KL.Conv1D(
                     filters=num_filters, kernel_size=filter_size,
-                    strides=flter_stride, padding='same')(x1)
-            x1 = KL.LeakyReLU()(_x1)
+                    strides=filter_stride, padding='same')(x1)
+            x1 = KL.LeakyReLU()(x1)
 
         pooled = KL.GlobalAvgPool1D()(x1)
         d = KL.Dense(1)(pooled)
 
-        return d[:, 0]
+        return d[:, 0], None
 
 
 class RNNTimeDistributedDiscriminator(RNNDiscriminator):
-    def grad_penalty(self, x_real, x_fake, c=None, approx=True, **kwargs):
+    def __init__(self,
+                 frame_size=200,
+                 state_size=100,
+                 length=8000,
+                 num_layers=1,
+                 cell=TF.nn.rnn_cell.LSTMCell,
+                 approx=True,
+                 **kwargs):
+        super(RNNTimeDistributedDiscriminator, self).__init__(
+                frame_size=frame_size, state_size=state_size,
+                length=length, num_layers=num_layers, cell=cell,
+                **kwargs)
+        self._approx = approx
+
+    def call(self, x, c=None, sum_=True, **kwargs):
+        batch_size = TF.shape(x)[0]
+        nframes = TF.shape(x)[1] // self._frame_size
+        h, _, _ = self._rnn(x, c=c, **kwargs)
+        h_size = 2 * self._state_size
+
+        w = TF.get_variable('w', shape=(h_size,), dtype=TF.float32)
+        b = TF.get_variable('b', shape=(), dtype=TF.float32)
+        d = TF.matmul(TF.reshape(h, (batch_size * nframes, h_size)),
+                      TF.reshape(w, (h_size, 1))) + b
+        d = TF.reshape(d, (batch_size, nframes))
+
+        return d if not sum_ else TF.reduce_sum(d, axis=1), None
+
+    def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
         eps = K.random_uniform([K.shape(x_real)[0], 1])
         x_inter = eps * x_real + (1 - eps) * x_fake
 
-        if approx:
+        if self._approx:
             d_inter, _ = self.discriminate(x_inter, c=c, **kwargs)
 
             grads = K.gradients(d_inter, x_inter)[0]
@@ -466,20 +493,20 @@ class LocalDiscriminatorWrapper(WGANCritic):
     def __init__(self,
                  discriminator,
                  frame_size=200,
-                 min_size=None,
-                 max_size=None,
+                 length=None,
                  **kwargs):
         super(LocalDiscriminatorWrapper, self).__init__(**kwargs)
 
         self._d = discriminator
         self._frame_size = frame_size
-        self._min_size = min_size or frame_size
-        self._max_size = max_size
+        self._length = length or frame_size
 
     def call(self, x, c=None, **kwargs):
-        min_frames = self._min_size // self._frame_size
-        max_frames = (self._max_size or TF.shape(x)[1]) // self._frame_size
-        local_size = TF.random_uniform(
-                (), minval=min_frames, maxval=max_frames + 1)
-        x_crop = TF.random_crop(x, size=[TF.shape(x)[0], local_size])
+        x_crop = TF.random_crop(x, size=[TF.shape(x)[0], length])
         return self._d(x_crop, c=c, **kwargs)
+
+    def compare(self, *args, **kwargs):
+        return self._d.compare(*args, **kwargs)
+
+    def grad_penalty(self, *args, **kwargs):
+        return self._d.grad_penalty(*args, **kwargs)
