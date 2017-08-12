@@ -66,7 +66,7 @@ parser.add_argument('--dgradclip', type=float, default=0.0)
 parser.add_argument('--ggradclip', type=float, default=0.0)
 parser.add_argument('--local', type=int, default=0)
 parser.add_argument('modelname', type=str)
-parser.add_argument('--logdir', type=str, default=None, help='log directory for D training')
+parser.add_argument('--logdir', type=str, default='.', help='log directory')
 
 args = parser.parse_args()
 
@@ -75,7 +75,8 @@ print args.modelname
 batch_size = args.batchsize
 
 # Log directories
-logdir = args.logdir or ('%s-%s' % (args.modelname, str(datetime.datetime.now())))
+logdir = args.logdir + '/%s-%s' % \
+        (args.modelname, datetime.datetime.strftime(datetime.datetime.now(), '%Y%m%d%H%M%S'))
 if not os.path.exists(logdir):
     os.mkdir(logdir)
 elif not os.path.isdir(logdir):
