@@ -11,36 +11,12 @@ import h5py
 
 import argparse
 import sys
+import datetime
+import os
 
 from timer import Timer
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=5, type=int)
-parser.add_argument('--cnng', action='store_true', default=True)
-parser.add_argument('--rnng', action='store_true',default=False)
-parser.add_argument('--cnnd', action='store_true',default=True)
-parser.add_argument('--rnnd', action='store_true',default=False)
-parser.add_argument('--resnet', action='store_true',default=True)
-parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
-parser.add_argument('--amplitudes', type=int, default=8000, help='# of amplitudes to generate')
-parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--statesize', type=int, default=100, help='RNN state size')
-parser.add_argument('--batchsize', type=int, default=32)
-parser.add_argument('--dgradclip', type=float, default=0.1)
-parser.add_argument('--ggradclip', type=float, default=0.0)
-parser.add_argument('modelname', type=str)
-parser.add_argument('--log_train_d', type=str, default='train-d_global', help='log directory for D training')
-parser.add_argument('--log_valid_d', type=str, default='valid-d_global', help='log directory for D validation')
-parser.add_argument('--log_train_g', type=str, default='train-g', help='log directory for G training')
-
-args = parser.parse_args()
-
-print args.modelname
-
-batch_size = args.batchsize
-
-if args.cnng:
-    g = model.Conv1DGenerator([
+default_cnng_config = [
         (128, 5, 1),
         (128, 5, 1),
         (128, 5, 2),
@@ -56,102 +32,180 @@ if args.cnng:
         (512, 5, 1),
         (512, 5, 1),
         (512, 5, 5),
-        ], resnet = args.resnet)
-    z = TF.placeholder(TF.float32, shape=(None, None))
-    z_fixed = RNG.randn(batch_size, args.noisesize)
-elif args.rnng:
-    g = model.RNNGenerator(frame_size=args.framesize, noise_size=args.noisesize, state_size=args.statesize)
-    z = TF.placeholder(TF.float32, shape=(None, None, None))
-    z_fixed = RNG.randn(batch_size, args.amplitudes // args.framesize, args.noisesize)
-    z_fixed[:, 1:-1] = 0
-else:
-    print 'Specify either --cnng or --rnng'
-    sys.exit(1)
-
-if args.cnnd:
-    d_global = model.Conv1DDiscriminator([
+        ]
+default_cnnd_config = [
         (128, 5, 5),
         (256, 5, 2),
         (256, 5, 2),
         (512, 5, 2),
         (512, 5, 2),
-        ])
-    d_local = model.Conv1DDiscriminator([
-        (64, 5, 2),
-        (128, 5, 2),
-        (128, 5, 2),
-        ])
+        ]
+
+default_cnng_config = ' '.join(['-'.join(map(str, c)) for c in default_cnng_config])
+default_cnnd_config = ' '.join(['-'.join(map(str, c)) for c in default_cnnd_config])
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--critic_iter', default=5, type=int)
+parser.add_argument('--cnng', action='store_true')
+parser.add_argument('--rnng', action='store_true')
+parser.add_argument('--cnnd', action='store_true')
+parser.add_argument('--rnnd', action='store_true')
+parser.add_argument('--rnng_layers', type=int, default=1)
+parser.add_argument('--rnnd_layers', type=int, default=1)
+parser.add_argument('--resnet', action='store_true')
+parser.add_argument('--rnntd', action='store_true')
+parser.add_argument('--rnntd_precise', action='store_true')
+parser.add_argument('--cnng_config', type=str, default=default_cnng_config)
+parser.add_argument('--cnnd_config', type=str, default=default_cnnd_config)
+parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
+parser.add_argument('--amplitudes', type=int, default=8000, help='# of amplitudes to generate')
+parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
+parser.add_argument('--statesize', type=int, default=100, help='RNN state size')
+parser.add_argument('--batchsize', type=int, default=32)
+parser.add_argument('--dgradclip', type=float, default=0.0)
+parser.add_argument('--ggradclip', type=float, default=0.0)
+parser.add_argument('--local', type=int, default=0)
+parser.add_argument('modelname', type=str)
+parser.add_argument('--logdir', type=str, default='.', help='log directory')
+
+args = parser.parse_args()
+
+print args.modelname
+
+batch_size = args.batchsize
+
+# Log directories
+logdir = args.logdir + '/%s-%s' % \
+        (args.modelname, datetime.datetime.strftime(datetime.datetime.now(), '%Y%m%d%H%M%S'))
+if not os.path.exists(logdir):
+    os.mkdir(logdir)
+elif not os.path.isdir(logdir):
+    raise IOError('%s is not a directory' % logdir)
+log_train_d = '%s/train-d' % logdir
+log_valid_d = '%s/valid-d' % logdir
+log_train_g = '%s/train-g' % logdir
+for subdir in [log_train_d, log_valid_d, log_train_g]:
+    if not os.path.exists(subdir):
+        os.mkdir(subdir)
+    elif not os.path.isdir(subdir):
+        raise IOError('%s exists and is not a directory' % subdir)
+
+# Build generator and discriminator
+if args.cnng:
+    cls = model.Conv1DGenerator if not args.resnet else model.ResNetGenerator
+    g = cls([map(int, c.split('-')) for c in args.cnng_config.split()])
+    noise_size = args.amplitudes // g.multiplier
+    z = TF.placeholder(TF.float32, shape=(None, noise_size))
+    z_fixed = RNG.randn(batch_size, noise_size)
+elif args.rnng:
+    g = model.RNNGenerator(
+            frame_size=args.framesize, noise_size=args.noisesize,
+            state_size=args.statesize, num_layers=args.rnng_layers)
+    nframes = args.amplitudes // args.framesize
+    z = TF.placeholder(TF.float32, shape=(None, nframes, args.noisesize))
+    z_fixed = RNG.randn(batch_size, nframes, args.noisesize)
+else:
+    print 'Specify either --cnng or --rnng'
+    sys.exit(1)
+
+if args.cnnd:
+    d = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()])
 elif args.rnnd:
-    d_global = model.RNNDiscriminator()
-    d_local = model.RNNDiscriminator()
+    cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
+    d = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
+            approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
 else:
     print 'Specify either --cnnd or --rnnd'
     sys.exit(1)
 
-x_global_real = TF.placeholder(TF.float32, shape=(None, None))
+# Computation graph
+x_real = TF.placeholder(TF.float32, shape=(None, args.amplitudes))
+x_real2 = TF.placeholder(TF.float32, shape=(None, args.amplitudes))
 lambda_ = TF.placeholder(TF.float32, shape=())
-x_global_fake = g.generate(batch_size=batch_size, length=args.amplitudes)
-comp_global, d_global_real, d_global_fake, pen_global = d_global.compare(x_global_real, x_global_fake, lambda_=lambda_)
-loss_d_global = TF.reduce_mean(comp_global)
-loss_g_global = TF.reduce_mean(-d_global.discriminate(x_global_fake))
-score_fake_global = -loss_g_global
-score_real_global = TF.reduce_mean(d_global.discriminate(x_global_real))
 
-local_size = TF.Variable(TF.random_uniform([1],minval=50,maxval=300,dtype=TF.int32)[0])
-x_local_real = TF.random_crop(
-    x_global_real,
-    size=[batch_size, local_size]
-)
-x_local_fake = TF.random_crop(
-    x_global_fake,
-    size=[batch_size, local_size]
-)
-comp_local, d_local_real, d_local_fake, pen_local = d_local.compare(x_local_real, x_local_fake, lambda_=lambda_)
-loss_d_local = TF.reduce_mean(comp_local)
-loss_g_local = TF.reduce_mean(-d_local.discriminate(x_local_fake))
-score_fake_local = -loss_g_local
-score_real_local = TF.reduce_mean(d_local.discriminate(x_local_real))
+x_fake = g.generate(batch_size=batch_size, length=args.amplitudes)
+comp, d_real, d_fake, pen, _, _ = d.compare(x_real, x_fake, lambda_=lambda_)
+comp_verify, d_verify_1, d_verify_2, pen_verify, _, _ = d.compare(x_real, x_real2, lambda_=lambda_)
+loss_d = comp
+loss_g = TF.reduce_mean(-d_fake)
 
-
-x = g.generate(z=z)
-
-opt_g = TF.train.AdamOptimizer()
-opt_d = TF.train.AdamOptimizer()
-grad_g, vars_g = zip(*opt_g.compute_gradients(loss_g_global, var_list=g.model.trainable_weights))
-grad_d, vars_d = zip(*opt_d.compute_gradients(
-    loss_d_global, var_list=d_global.model.trainable_weights + d_local.model.trainable_weights))
-if args.ggradclip:
-    grad_g = [TF.clip_by_norm(_g, args.ggradclip) for _g in grad_g]
-if args.dgradclip:
-    grad_d = [TF.clip_by_norm(_g, args.dgradclip) for _g in grad_d if _g is not None]
-train_g = opt_g.apply_gradients(zip(grad_g, vars_g))
-train_d = opt_d.apply_gradients(zip(grad_d, vars_d))
+x = g.generate(z=z)         # Sample audio from fixed noise
 
 # Summaries
-d_summaries = TF.summary.merge([
-    util.summarize_var(comp_global, 'comp_global', mean=True),
-    TF.summary.histogram('d_global_real', d_global_real),
-    TF.summary.histogram('d_global_fake', d_global_fake),
-    util.summarize_var(pen_global, 'pen_global', mean=True, std=True),
-    TF.summary.histogram('x_global_real', x_global_real),
-    TF.summary.histogram('x_global_fake', x_global_fake),
-    util.summarize_var(comp_local, 'comp_local', mean=True),
-    TF.summary.histogram('d_local_real', d_local_real),
-    TF.summary.histogram('d_local_fake', d_local_fake),
-    util.summarize_var(pen_local, 'pen_local', mean=True, std=True),
-    TF.summary.histogram('x_local_real', x_local_real),
-    TF.summary.histogram('x_local_fake', x_local_fake),
-    ])
-g_summaries = TF.summary.merge([
-    TF.summary.histogram('d_fake_g_global', d_global_fake),
-    TF.summary.histogram('x_fake_g_global', x_global_fake),
-    TF.summary.histogram('d_fake_g_local', d_local_fake),
-    TF.summary.histogram('x_fake_g_local', x_local_fake),
-    ])
+d_train_writer = TF.summary.FileWriter(log_train_d)
+d_valid_writer = TF.summary.FileWriter(log_valid_d)
+g_writer = TF.summary.FileWriter(log_train_g)
+
+d_summaries = [
+        util.summarize_var(comp, 'comp', mean=True),
+        util.summarize_var(d_real, 'd_real', mean=True),
+        util.summarize_var(d_fake, 'd_fake', mean=True),
+        util.summarize_var(pen, 'pen', mean=True, std=True),
+        TF.summary.histogram('x_real', x_real),
+        TF.summary.histogram('x_fake', x_fake),
+        ]
+g_summaries = [
+        util.summarize_var(d_fake, 'd_fake_g', mean=True),
+        TF.summary.histogram('x_fake_g', x_fake),
+        ]
 audio_gen = TF.summary.audio('sample', x, 8000)
-d_train_writer = TF.summary.FileWriter(args.log_train_d)
-d_valid_writer = TF.summary.FileWriter(args.log_valid_d)
-g_writer = TF.summary.FileWriter(args.log_train_g)
+
+# Process local discriminators if specified
+if args.local:
+    # For RNN, supporting second-order derivatives for variable-length
+    # is, if at all possible, extremely complicated, as TF.while_loop()
+    # (hence TF.nn.dynamic_rnn()) does not support second-order
+    # gradients and the development team has no plan to do so.
+    # If we ever want to support variable length, the best thing I
+    # can think of is: train the model with a fixed length for a while,
+    # save it, then rebuild the graph with a different length, and
+    # restore the weights (like what https://arxiv.org/abs/1706.01399
+    # did for curriculum learning)
+    d_local = model.LocalDiscriminatorWrapper(d, args.framesize, args.local)
+    comp_local, d_real_local, d_fake_local, pen_local, _, _ = \
+            d_local.compare(x_real, x_fake, lambda_=lambda_)
+    loss_d += comp_local
+    loss_g += TF.reduce_mean(-d_fake_local)
+
+    d_summaries += [
+            util.summarize_var(comp_local, 'comp_local', mean=True),
+            util.summarize_var(d_real_local, 'd_real_local', mean=True),
+            util.summarize_var(d_fake_local, 'd_fake_local', mean=True),
+            util.summarize_var(pen_local, 'pen_local', mean=True, std=True),
+            ]
+    g_summaries += [
+            util.summarize_var(d_fake_local, 'd_fake_local_g', mean=True),
+            ]
+
+d_valid_summaries = d_summaries + [
+        util.summarize_var(comp_verify, 'comp_verify', mean=True),
+        util.summarize_var(d_verify_1, 'd_verify_1', mean=True),
+        util.summarize_var(d_verify_2, 'd_verify_2', mean=True),
+        util.summarize_var(pen_verify, 'pen_verify', mean=True, std=True),
+        ]
+
+# Optimizer
+opt_g = TF.train.AdamOptimizer()
+opt_d = TF.train.AdamOptimizer()
+autoupdate_ops = util.AutoUpdate.get_update_op()
+TF.add_to_collection(TF.GraphKeys.UPDATE_OPS, autoupdate_ops)
+with TF.control_dependencies(TF.get_collection(TF.GraphKeys.UPDATE_OPS)):
+    grad_g, vars_g = zip(
+            *opt_g.compute_gradients(
+                loss_g, var_list=g.get_trainable_weights()))
+    grad_d, vars_d = zip(
+            *opt_d.compute_gradients(
+                loss_d, var_list=d.get_trainable_weights()))
+    if args.ggradclip:
+        grad_g = [TF.clip_by_norm(_g, args.ggradclip) for _g in grad_g if _g]
+    if args.dgradclip:
+        grad_d = [TF.clip_by_norm(_g, args.dgradclip) for _g in grad_d if _g]
+    train_g = opt_g.apply_gradients(zip(grad_g, vars_g))
+    train_d = opt_d.apply_gradients(zip(grad_d, vars_d))
+
+d_summaries = TF.summary.merge(d_summaries)
+d_valid_summaries = TF.summary.merge(d_valid_summaries)
+g_summaries = TF.summary.merge(g_summaries)
 
 dataset = h5py.File('dataset.h5')
 data = dataset['data']
@@ -185,7 +239,7 @@ epoch = 1
 l = 10
 
 if __name__ == '__main__':
-    s = TF.Session()
+    s = model.start()
     d_train_writer.add_graph(s.graph)
     g_writer.add_graph(s.graph)
     s.run(TF.global_variables_initializer())
@@ -200,27 +254,31 @@ if __name__ == '__main__':
             with Timer.new('load', print_=False):
                 epoch, batch_id, real_data = dataloader.next()
             with Timer.new('train_d', print_=False):
-                _, loss, d_sum = s.run([train_d, loss_d_global, d_summaries], 
-                                       feed_dict={x_global_real: real_data, lambda_: l,
+                _, loss, d_sum = s.run([train_d, loss_d, d_summaries], 
+                                       feed_dict={x_real: real_data, lambda_: l,
                                                   K.learning_phase():1})
             print 'D', epoch, batch_id, loss, Timer.get('load'), Timer.get('train_d')
             d_train_writer.add_summary(d_sum, i * args.critic_iter + j + 1)
         i += 1
 
         _, _, real_data = dataloader_val.next()
-        loss, d_sum = s.run([loss_d_global, d_summaries],
-                            feed_dict={x_global_real: real_data, lambda_: l,
-                                       K.learning_phase():0})
-        print 'D-valid', loss
+        _, _, real_data2 = dataloader_val.next()
+        loss, loss_ver, d_ver1, d_ver2, d_sum = s.run(
+                [loss_d, comp_verify, d_verify_1, d_verify_2, d_valid_summaries],
+                feed_dict={x_real: real_data,
+                           x_real2: real_data2,
+                           lambda_: l,
+                           K.learning_phase():0})
+        print 'D-valid', loss, loss_ver, d_ver1.mean(), d_ver2.mean()
         d_valid_writer.add_summary(d_sum, i * args.critic_iter)
 
         with Timer.new('train_g', print_=False):
-            _, loss, g_sum = s.run([train_g, loss_g_global, g_summaries],
+            _, loss, g_sum = s.run([train_g, loss_g, g_summaries],
                                     {K.learning_phase():1})
         print 'G', i, loss, Timer.get('train_g')
         g_writer.add_summary(g_sum, i * args.critic_iter)
 
-        _ = s.run(x_global_fake, {K.learning_phase():0})
+        _ = s.run(x_fake, {K.learning_phase():0})
         if NP.any(NP.isnan(_)):
             print 'NaN generated'
             sys.exit(0)
@@ -232,4 +290,4 @@ if __name__ == '__main__':
             if i % 1000 == 0:
                 NP.save('%s%05d.npy' % (args.modelname, i), x_gen)
                 g.save('%s-gen-%05d' % (args.modelname, i))
-                d_global.save('%s-dis-%05d' % (args.modelname, i))
+                d.save('%s-dis-%05d' % (args.modelname, i))
