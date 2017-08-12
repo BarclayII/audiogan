@@ -9,7 +9,6 @@ import keras.models as KM
 import keras.activations as KA
 
 from cells import Conv2DLSTMCell, ProjectedLSTMCell, FeedbackMultiLSTMCell
-from utiltf import AutoUpdate
 
 session = None
 
@@ -240,9 +239,11 @@ class ResNetGenerator(Conv1DGenerator):
                 x = self._residual_block(
                         x, filter_size, num_filters // 2, num_filters)
             else:
-                x = KL.Conv2DTranspose(
-                        filters=num_filters, kernel_size=(1, filter_size),
-                        strides=(1, filter_stride), padding='same')(x)
+                x = TF.contrib.layers.conv2d_transpose(
+                        x,
+                        num_filters, kernel_size=(1, filter_size),
+                        stride=(1, filter_stride), padding='SAME',
+                        activation_fn=None)
                 x = KL.LeakyReLU()(x)
 
             last_num_filters = num_filters
@@ -250,28 +251,31 @@ class ResNetGenerator(Conv1DGenerator):
         return x
 
     def _add_common_layers(self, y):
-        y = AutoUpdate(KL.BatchNormalization())(y)
+        y = TF.contrib.layers.batch_norm(
+                y, is_training=K.learning_phase(), scale=True)
         y = KL.LeakyReLU()(y)
         return y
 
     def _grouped_convolution(self, y, kernel_size, nchannels, strides):
         if self.cardinality == 1:
-            return KL.Conv2D(
-                    nchannels, kernel_size=kernel_size, strides=strides,
-                    padding='same')(y)
+            return TF.contrib.layers.conv2d(
+                    y,
+                    nchannels, kernel_size=kernel_size, stride=strides,
+                    padding='SAME')
 
         assert not nchannels % cardinality
         _d = nchannels // cardinality
 
         groups = []
         for j in range(cardinality):
-            group = KL.Lambda(lambda z: z[:, :, :, j*_d:j*_d+_d])(y)
+            group = y[:, :, :, j*_d:j*_d+_d]
             groups.append(
-                    KL.Conv2D(
-                        _d, kernel_size=kernel_size, strides=strides,
-                        padding='same')(group)
+                    TF.contrib.layers.conv2d(
+                        group,
+                        _d, kernel_size=kernel_size, stride=strides,
+                        padding='SAME')
                     )
-        y = KL.concatenate(groups)
+        y = TF.concat(groups, axis=-1)
         return y
 
     def _residual_block(self,
@@ -283,27 +287,32 @@ class ResNetGenerator(Conv1DGenerator):
                         project_shortcut=False):
         shortcut = y
 
-        y = KL.Conv2D(
-                nchannels_in, kernel_size=(1, 1), strides=(1, 1),
-                padding='same')(y)
+        y = TF.contrib.layers.conv2d(
+                y,
+                nchannels_in, kernel_size=(1, 1), stride=(1, 1),
+                padding='SAME')
         y = self._add_common_layers(y)
 
         y = self._grouped_convolution(
             y, filter_size, nchannels_in, strides)
         y = self._add_common_layers(y)
 
-        y = KL.Conv2D(
-                nchannels_out, kernel_size=(1, 1), strides=(1, 1),
-                padding='same')(y)
-        y = AutoUpdate(KL.BatchNormalization())(y)
+        y = TF.contrib.layers.conv2d(
+                y,
+                nchannels_out, kernel_size=(1, 1), stride=(1, 1),
+                padding='SAME')
+        y = TF.contrib.layers.batch_norm(
+                y, is_training=K.learning_phase(), scale=True)
 
         if project_shortcut or strides != (1, 1):
-            shortcut = KL.Conv2D(
-                    nchannels_out, kernel_size=(1, 1), strides=(1, 1),
-                    padding='same')(shortcut)
-            shortcut = AutoUpdate(KL.BatchNormalization())(shortcut)
+            shortcut = TF.contrib.layers.conv2d(
+                    shortcut,
+                    nchannels_out, kernel_size=(1, 1), stride=(1, 1),
+                    padding='SAME')
+            shortcut = TF.contrib.layers.batch_norm(
+                    shortcut, is_training=K.learning_phase(), scale=True)
 
-        y = KL.add([shortcut, y])
+        y = shortcut + y
         y = KL.LeakyReLU()(y)
 
         return y

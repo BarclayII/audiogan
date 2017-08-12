@@ -187,8 +187,6 @@ d_valid_summaries = d_summaries + [
 # Optimizer
 opt_g = TF.train.AdamOptimizer()
 opt_d = TF.train.AdamOptimizer()
-autoupdate_ops = util.AutoUpdate.get_update_op()
-TF.add_to_collection(TF.GraphKeys.UPDATE_OPS, autoupdate_ops)
 with TF.control_dependencies(TF.get_collection(TF.GraphKeys.UPDATE_OPS)):
     grad_g, vars_g = zip(
             *opt_g.compute_gradients(
@@ -196,12 +194,12 @@ with TF.control_dependencies(TF.get_collection(TF.GraphKeys.UPDATE_OPS)):
     grad_d, vars_d = zip(
             *opt_d.compute_gradients(
                 loss_d, var_list=d.get_trainable_weights()))
-    if args.ggradclip:
-        grad_g = [TF.clip_by_norm(_g, args.ggradclip) for _g in grad_g if _g]
-    if args.dgradclip:
-        grad_d = [TF.clip_by_norm(_g, args.dgradclip) for _g in grad_d if _g]
-    train_g = opt_g.apply_gradients(zip(grad_g, vars_g))
-    train_d = opt_d.apply_gradients(zip(grad_d, vars_d))
+if args.ggradclip:
+    grad_g = [TF.clip_by_norm(_g, args.ggradclip) for _g in grad_g if _g]
+if args.dgradclip:
+    grad_d = [TF.clip_by_norm(_g, args.dgradclip) for _g in grad_d if _g]
+train_g = opt_g.apply_gradients(zip(grad_g, vars_g))
+train_d = opt_d.apply_gradients(zip(grad_d, vars_d))
 
 d_summaries = TF.summary.merge(d_summaries)
 d_valid_summaries = TF.summary.merge(d_valid_summaries)
@@ -243,10 +241,7 @@ if __name__ == '__main__':
     d_train_writer.add_graph(s.graph)
     g_writer.add_graph(s.graph)
     s.run(TF.global_variables_initializer())
-    x_gen = s.run(x, feed_dict={z: z_fixed,
-                                K.learning_phase():0})
-    assert x_gen.shape[0] == batch_size
-    assert x_gen.shape[1] == args.amplitudes
+
     while True:
         _epoch = epoch
 
