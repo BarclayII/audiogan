@@ -209,9 +209,10 @@ class Conv2DRNNGenerator(Generator):
                 output_shape=(1, self._noise_size, 1),
                 )
 
-        if z is None and initial_h is None:
+        if z is None:
             z = TF.random_normal((batch_size, num_frames, 1, noise_size, 1))
 
+        if initial_h is None:
             _initial_h = lstm_f.zero_state(batch_size, TF.float32)
             initial_h = tuple(TF.random_normal(TF.shape(h)) for h in _initial_h)
 
