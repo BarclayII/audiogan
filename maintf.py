@@ -197,9 +197,9 @@ with TF.control_dependencies(TF.get_collection(TF.GraphKeys.UPDATE_OPS)):
             *opt_d.compute_gradients(
                 loss_d, var_list=d.get_trainable_weights()))
 if args.ggradclip:
-    grad_g = [TF.clip_by_norm(_g, args.ggradclip) for _g in grad_g if _g]
+    grad_g = [TF.clip_by_norm(_g, args.ggradclip) for _g in grad_g if _g is not None]
 if args.dgradclip:
-    grad_d = [TF.clip_by_norm(_g, args.dgradclip) for _g in grad_d if _g]
+    grad_d = [TF.clip_by_norm(_g, args.dgradclip) for _g in grad_d if _g is not None]
 train_g = opt_g.apply_gradients(zip(grad_g, vars_g))
 train_d = opt_d.apply_gradients(zip(grad_d, vars_d))
 
