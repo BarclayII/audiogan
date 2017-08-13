@@ -67,10 +67,12 @@ parser.add_argument('--ggradclip', type=float, default=0.0)
 parser.add_argument('--local', type=int, default=0)
 parser.add_argument('modelname', type=str)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
+parser.add_argument('--subset', type=int, default=0)
 
 args = parser.parse_args()
 
 print args.modelname
+print args
 
 batch_size = args.batchsize
 
@@ -208,6 +210,10 @@ g_summaries = TF.summary.merge(g_summaries)
 dataset = h5py.File('dataset.h5')
 data = dataset['data']
 nsamples = data.shape[0]
+if args.subset:
+    nsample_indices = RNG.permutation(range(nsamples))[:args.subset]
+    data = data[sorted(nsample_indices)]
+    nsamples = args.subset
 n_train_samples = nsamples // 10 * 9
 def _dataloader(batch_size, data, lower, upper):
     epoch = 1
@@ -220,7 +226,8 @@ def _dataloader(batch_size, data, lower, upper):
         for i in range(batch_size):
             if cur == len(idx):
                 cur = 0
-                idx = RNG.permutation(range(lower, upper))
+                idx_set = list(set(range(lower, upper)) - set(indices))
+                idx = RNG.permutation(idx_set)
                 epoch += 1
                 batch = 0
             indices.append(idx[cur])

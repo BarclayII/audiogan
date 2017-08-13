@@ -379,10 +379,11 @@ class RNNDiscriminator(WGANCritic):
         self._cell = cell
         self._length = length
         self._num_layers = num_layers
+        self._nframes = length // frame_size
 
     def _rnn(self, x, c=None, **kwargs):
         batch_size = TF.shape(x)[0]
-        nframes = self._length // self._frame_size
+        nframes = self._nframes
         _x = TF.reshape(x, (batch_size, nframes, self._frame_size))
         if c is not None:
             c = TF.tile(TF.expand_dims(c, 1), (1, num_frames, 1))
@@ -454,7 +455,7 @@ class RNNTimeDistributedDiscriminator(RNNDiscriminator):
 
     def call(self, x, c=None, sum_=True, **kwargs):
         batch_size = TF.shape(x)[0]
-        nframes = TF.shape(x)[1] // self._frame_size
+        nframes = self._nframes
         h, _, _ = self._rnn(x, c=c, **kwargs)
         h_size = 2 * self._state_size
 
@@ -475,7 +476,7 @@ class RNNTimeDistributedDiscriminator(RNNDiscriminator):
 
             grads = K.gradients(d_inter, x_inter)[0]
             grad_norms = K.sqrt(K.sum(K.square(grads), axis=1))
-            penalty = K.square(grad_norms - 1)
+            penalty = K.square(grad_norms - self._nframes)
         else:
             d_inter, _ = self.discriminate(x_inter, c=c, sum_=False, **kwargs)
             penalty = 0
