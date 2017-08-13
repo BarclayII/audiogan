@@ -386,7 +386,7 @@ class RNNDiscriminator(WGANCritic):
         nframes = self._nframes
         _x = TF.reshape(x, (batch_size, nframes, self._frame_size))
         if c is not None:
-            c = TF.tile(TF.expand_dims(c, 1), (1, num_frames, 1))
+            c = TF.tile(TF.expand_dims(c, 1), (1, nframes, 1))
             _x = TF.concatenate([_x, c], axis=2)
 
         lstms_f = []
@@ -481,7 +481,7 @@ class RNNTimeDistributedDiscriminator(RNNDiscriminator):
             d_inter, _ = self.discriminate(x_inter, c=c, sum_=False, **kwargs)
             penalty = 0
 
-            for i in range(self._num_frames):
+            for i in range(self._nframes):
                 grads = K.gradients(d_inter[:, i], x_inter)[0]
                 grad_norms = K.sqrt(K.sum(K.square(grads), axis=1))
                 penalty += K.square(grad_norms - 1)
