@@ -119,10 +119,10 @@ elif args.rnnd:
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
 elif args.duald:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
-    rnn = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
+    drnn = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
-    cnn = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()])
-    d = model.DualDiscriminator(rnn=rnn,cnn=cnn)
+    dcnn = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()])
+    d = model.ManyDiscriminator(d_list =[drnn, dcnn])
 else:
     print 'Specify either --cnnd or --rnnd or --duald'
     sys.exit(1)
@@ -171,7 +171,7 @@ if args.local:
     # restore the weights (like what https://arxiv.org/abs/1706.01399
     # did for curriculum learning)
     
-    d_local = model.LocalDiscriminatorWrapper(d.rnn, args.framesize//5, args.local)
+    d_local = model.LocalDiscriminatorWrapper(drnn, args.framesize//5, args.local)
     comp_local, d_real_local, d_fake_local, pen_local, _, _ = \
             d_local.compare(x_real, x_fake, lambda_=lambda_)
     loss_d += comp_local

@@ -535,6 +535,60 @@ class DualDiscriminator(Model):
         return (l1+l2)/2, (dr1+dr2)/2, (df1+df2)/2, (p1+p2)/2, \
             (drp1+drp2)/2 if cond_input else None, (dfp1+dfp2)/2 if cond_input else None
 
+
+class ManyDiscriminator(Model):
+    
+    def __init__(self, d_list, **kwargs):
+        super(ManyDiscriminator, self).__init__(**kwargs)
+        self.d_list = d_list
+        self.num_d = len(d_list)
+        
+    def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
+        penalty = 0
+        for d in self.d_list:
+            penalty += d.grad_penalty(x_real, x_fake, c, **kwargs)
+        return penalty
+
+    def get_trainable_weights(self, **kwargs):
+        all_listed = [TF.get_collection(
+                TF.GraphKeys.TRAINABLE_VARIABLES,
+                scope=d.name
+                ) for d in self.d_list]
+        return reduce(lambda q,p: q+p, all_listed)
+
+    def call(self, x, c=None, **kwargs):
+        d, _ = self.d_list.discriminat(x, c, **kwargs)
+        for d in self.d_list[1:]:
+            d_next, _ = self.rnn.discriminate(x, c, **kwargs)
+            d += d_next
+
+        return d, None
+    
+    def compare(self,
+                x_real,
+                x_fake,
+                grad_penalty=True,
+                lambda_=10,
+                c=None,
+                mode='unconditional',
+                **kwargs):
+        num_d = self.num_d
+        cond_input = mode == 'conditional_input'
+        l = dr = df = p = drp = dfp = 0
+        for d in self.d_list:
+            l1, dr1, df1, p1, drp1, dfp1 = d.compare(x_real, x_fake, grad_penalty, lambda_, c, mode, **kwargs)
+            l += l1/num_d
+            dr += dr1/num_d
+            df += df1/num_d
+            p += p1/num_d
+            if cond_input:
+                drp += drp1/num_d
+                dfp += dfp1/num_d
+        if not cond_input:
+            drp = None
+            dfp = None
+        return l, dr, df, p, drp, dfp
+
 class LocalDiscriminatorWrapper(WGANCritic):
     '''
     Discriminates a chunk of audio.
