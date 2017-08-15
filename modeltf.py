@@ -489,6 +489,44 @@ class RNNTimeDistributedDiscriminator(RNNDiscriminator):
         return penalty
 
 
+class DualDiscriminator(object):
+    
+    def __init__(self, rnn, cnn, **kwargs):
+        super(DualDiscriminator, self).__init__(**kwargs)
+        self.rnn = rnn
+        self.cnn = cnn
+        
+    def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
+        p1 = self.rnn.grad_penalty(x_real, x_fake, c, **kwargs)
+        p2 = self.cnn.grad_penalty(x_real, x_fake, c, **kwargs)
+        penalty = p1 + p2
+        return penalty
+
+    def get_trainable_weights(self, **kwargs):
+        return TF.get_collection(
+                TF.GraphKeys.TRAINABLE_VARIABLES,
+                scope=self.rnn.name
+                ) + TF.get_collection(
+                TF.GraphKeys.TRAINABLE_VARIABLES,
+                scope=self.cnn.name
+                )
+        
+    def compare(self,
+                x_real,
+                x_fake,
+                grad_penalty=True,
+                lambda_=10,
+                c=None,
+                mode='unconditional',
+                **kwargs):
+        
+        cond_input = mode == 'conditional_input'
+        l1, dr1, df1, p1, drp1, dfp1 = self.rnn.compare(x_real, x_fake, grad_penalty, lambda_, c, mode, **kwargs)
+        l2, dr2, df2, p2, drp2, dfp2 = self.cnn.compare(x_real, x_fake, grad_penalty, lambda_, c, mode, **kwargs)
+        
+        return (l1+l2)/2, (dr1+dr2)/2, (df1+df2)/2, (p1+p2)/2, \
+            (drp1+drp2)/2 if cond_input else None, (dfp1+dfp2)/2 if cond_input else None
+
 class LocalDiscriminatorWrapper(WGANCritic):
     '''
     Discriminates a chunk of audio.
