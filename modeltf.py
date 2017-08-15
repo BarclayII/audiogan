@@ -111,7 +111,7 @@ class RNNGenerator(Generator):
         self._cell = cell
         self._num_layers = num_layers
 
-    def call(self, batch_size=None, length=None, z=None, hf=None):
+    def call(self, batch_size=None, length=None, z=None, initial_h=None):
         frame_size = self._frame_size
         noise_size = self._noise_size
         state_size = self._state_size
@@ -127,14 +127,14 @@ class RNNGenerator(Generator):
         else:
             batch_size = TF.shape(z)[0]
 
-        if hf is None:
-            hf = lstm_f.random_state(batch_size, TF.float32)
+        if initial_h is None:
+            initial_h = lstm_f.random_state(batch_size, TF.float32)
 
         z_unstack = TF.unstack(TF.transpose(z, (1, 0, 2)))
 
         x = TF.nn.static_rnn(
                 lstm_f, z_unstack, dtype=TF.float32,
-                initial_state=hf,
+                initial_state=initial_h,
                 )[0]
         x = TF.concat(x, axis=1)
 
@@ -187,7 +187,7 @@ class Conv2DRNNGenerator(Generator):
         self._filters = filters
         self._cell = cell
 
-    def call(self, batch_size=None, length=None, z=None, hf=None, hb=None):
+    def call(self, batch_size=None, length=None, z=None, initial_h=None):
         noise_size = self._noise_size
         filters = self._filters
         kernel_size = self._kernel_size
@@ -209,17 +209,18 @@ class Conv2DRNNGenerator(Generator):
                 output_shape=(1, self._noise_size, 1),
                 )
 
-        if z is None and hf is None and hb is None:
+        if z is None:
             z = TF.random_normal((batch_size, num_frames, 1, noise_size, 1))
 
-            _hf = lstm_f.zero_state(batch_size, TF.float32)
-            hf = tuple(TF.random_normal(TF.shape(h)) for h in _hf)
+        if initial_h is None:
+            _initial_h = lstm_f.zero_state(batch_size, TF.float32)
+            initial_h = tuple(TF.random_normal(TF.shape(h)) for h in _initial_h)
 
         z_unstack = TF.unstack(TF.transpose(z, (1, 0, 2, 3, 4)))
 
         x = TF.nn.static_rnn(
                 lstm_f, z_unstack, dtype=TF.float32,
-                initial_state=hf,
+                initial_state=initial_h,
                 )[0]
         x = TF.concat(x, axis=2)[:, 0, :, 0]
 
@@ -387,7 +388,7 @@ class RNNDiscriminator(WGANCritic):
         _x = TF.reshape(x, (batch_size, nframes, self._frame_size))
         if c is not None:
             c = TF.tile(TF.expand_dims(c, 1), (1, nframes, 1))
-            _x = TF.concatenate([_x, c], axis=2)
+            _x = TF.concat([_x, c], axis=2)
 
         lstms_f = []
         lstms_b = []

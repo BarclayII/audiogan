@@ -191,6 +191,7 @@ d_valid_summaries = d_summaries + [
         util.summarize_var(comp_verify, 'comp_verify', mean=True),
         util.summarize_var(d_verify_1, 'd_verify_1', mean=True),
         util.summarize_var(d_verify_2, 'd_verify_2', mean=True),
+        util.summarize_var(d_verify_2 - d_verify_1, 'd_verify_diff', mean=True),
         util.summarize_var(pen_verify, 'pen_verify', mean=True, std=True),
         ]
 
