@@ -490,7 +490,7 @@ class RNNTimeDistributedDiscriminator(RNNDiscriminator):
         return penalty
 
 
-class DualDiscriminator(object):
+class DualDiscriminator(Model):
     
     def __init__(self, rnn, cnn, **kwargs):
         super(DualDiscriminator, self).__init__(**kwargs)
@@ -511,7 +511,14 @@ class DualDiscriminator(object):
                 TF.GraphKeys.TRAINABLE_VARIABLES,
                 scope=self.cnn.name
                 )
+
+    def call(self, x, c=None, **kwargs):
         
+        d_rnn, _ = self.rnn.discriminate(x, c, **kwargs)
+        d_cnn, _ = self.cnn.discriminate(x, c, **kwargs)
+
+        return d_rnn + d_cnn, None
+    
     def compare(self,
                 x_real,
                 x_fake,
