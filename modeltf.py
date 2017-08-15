@@ -439,32 +439,63 @@ class Conv1DDiscriminator(WGANCritic):
         return d[:, 0], None
 
 
-class RNNTimeDistributedDiscriminator(RNNDiscriminator):
+class RNNTimeDistributedDiscriminator(WGANCritic):
     def __init__(self,
                  frame_size=200,
                  state_size=100,
                  length=8000,
                  num_layers=1,
                  cell=TF.nn.rnn_cell.LSTMCell,
+                 bidirectional=True,
                  approx=True,
                  **kwargs):
-        super(RNNTimeDistributedDiscriminator, self).__init__(
-                frame_size=frame_size, state_size=state_size,
-                length=length, num_layers=num_layers, cell=cell,
-                **kwargs)
+        super(RNNTimeDistributedDiscriminator, self).__init__(**kwargs)
+
+        self._frame_size = frame_size
+        self._state_size = state_size
+        self._cell = cell
+        self._length = length
+        self._num_layers = num_layers
+        self._nframes = length // frame_size
         self._approx = approx
+        self._bidirectional = bidirectional
+
+    def _rnn(self, cells, x, scope):
+        batch_size = TF.shape(x[0])[0]
+        nframes = self._nframes
+        with TF.variable_scope(scope, reuse=self.built):
+            h = x
+            for cell in cells:
+                h, _ = TF.nn.static_rnn(cell, h, dtype=TF.float32)
+            h = TF.concat(h, axis=1)
+            w = TF.get_variable('w', shape=(self._state_size,), dtype=TF.float32)
+            b = TF.get_variable('b', shape=(), dtype=TF.float32)
+            d = TF.matmul(TF.reshape(h, (batch_size * nframes, self._state_size)),
+                          TF.reshape(w, (self._state_size, 1))) + b
+            d = TF.reshape(d, (batch_size, nframes))
+
+        return d
 
     def call(self, x, c=None, sum_=True, **kwargs):
         batch_size = TF.shape(x)[0]
         nframes = self._nframes
-        h, _, _ = self._rnn(x, c=c, **kwargs)
-        h_size = 2 * self._state_size
+        _x = TF.reshape(x, (batch_size, nframes, self._frame_size))
+        if c is not None:
+            c = TF.tile(TF.expand_dims(c, 1), (1, nframes, 1))
+            _x = TF.concat([_x, c], axis=2)
 
-        w = TF.get_variable('w', shape=(h_size,), dtype=TF.float32)
-        b = TF.get_variable('b', shape=(), dtype=TF.float32)
-        d = TF.matmul(TF.reshape(h, (batch_size * nframes, h_size)),
-                      TF.reshape(w, (h_size, 1))) + b
-        d = TF.reshape(d, (batch_size, nframes))
+        lstms_f = []
+        lstms_b = []
+        for _ in range(self._num_layers):
+            lstms_f.append(self._cell(self._state_size))
+            lstms_b.append(self._cell(self._state_size))
+
+        x_unstack = TF.unstack(TF.transpose(_x, (1, 0, 2)))
+
+        d = self._rnn(lstms_f, x_unstack, 'fw')
+        if self._bidirectional:
+            d_bw = self._rnn(lstms_b, x_unstack[::-1], 'bw')    # reversed in axis 1
+            d = TF.concat([d, d_bw], axis=1)
 
         return d if not sum_ else TF.reduce_sum(d, axis=1), None
 
@@ -477,7 +508,7 @@ class RNNTimeDistributedDiscriminator(RNNDiscriminator):
 
             grads = K.gradients(d_inter, x_inter)[0]
             grad_norms = K.sqrt(K.sum(K.square(grads), axis=1))
-            penalty = K.square(grad_norms - self._nframes)
+            penalty = K.square(grad_norms - 1)
         else:
             d_inter, _ = self.discriminate(x_inter, c=c, sum_=False, **kwargs)
             penalty = 0
