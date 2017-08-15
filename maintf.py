@@ -191,18 +191,14 @@ d_valid_summaries = d_summaries + [
 opt_g = TF.train.AdamOptimizer()
 opt_d = TF.train.AdamOptimizer()
 with TF.control_dependencies(TF.get_collection(TF.GraphKeys.UPDATE_OPS)):
-    grad_g, vars_g = zip(
-            *opt_g.compute_gradients(
-                loss_g, var_list=g.get_trainable_weights()))
-    grad_d, vars_d = zip(
-            *opt_d.compute_gradients(
-                loss_d, var_list=d.get_trainable_weights()))
+    grad_g = opt_g.compute_gradients(loss_g, var_list=g.get_trainable_weights())
+    grad_d = opt_d.compute_gradients(loss_d, var_list=d.get_trainable_weights())
 if args.ggradclip:
-    grad_g = [TF.clip_by_norm(_g, args.ggradclip) for _g in grad_g if _g is not None]
+    grad_g = [(TF.clip_by_norm(_g, args.ggradclip), _v) for _g, _v in grad_g if _g is not None]
 if args.dgradclip:
-    grad_d = [TF.clip_by_norm(_g, args.dgradclip) for _g in grad_d if _g is not None]
-train_g = opt_g.apply_gradients(zip(grad_g, vars_g))
-train_d = opt_d.apply_gradients(zip(grad_d, vars_d))
+    grad_d = [(TF.clip_by_norm(_g, args.dgradclip), _v) for _g, _v in grad_d if _g is not None]
+train_g = opt_g.apply_gradients(grad_g)
+train_d = opt_d.apply_gradients(grad_d)
 
 d_summaries = TF.summary.merge(d_summaries)
 d_valid_summaries = TF.summary.merge(d_valid_summaries)
