@@ -139,8 +139,7 @@ lambda_ = TF.placeholder(TF.float32, shape=())
 x_fake = g.generate(batch_size=batch_size, length=args.amplitudes)
 comp, d_real, d_fake, pen, _, _ = d.compare(x_real, x_fake, lambda_=lambda_)
 comp_verify, d_verify_1, d_verify_2, pen_verify, _, _ = d.compare(x_real, x_real2, lambda_=lambda_)
-hack = TF.reduce_mean(TF.square(d_real)) + TF.reduce_mean(TF.square(d_fake))
-loss_d = comp + hack/100000
+
 loss_g = TF.reduce_mean(-d_fake)
 
 x = g.generate(z=z)         # Sample audio from fixed noise
