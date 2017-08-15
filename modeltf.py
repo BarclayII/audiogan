@@ -558,8 +558,8 @@ class ManyDiscriminator(Model):
 
     def call(self, x, c=None, **kwargs):
         d, _ = self.d_list.discriminat(x, c, **kwargs)
-        for d in self.d_list[1:]:
-            d_next, _ = self.rnn.discriminate(x, c, **kwargs)
+        for dis in self.d_list[1:]:
+            d_next, _ = dis.discriminate(x, c, **kwargs)
             d += d_next
 
         return d, None
