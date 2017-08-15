@@ -65,7 +65,7 @@ parser.add_argument('--statesize', type=int, default=100, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=0.0)
 parser.add_argument('--ggradclip', type=float, default=0.0)
-parser.add_argument('--local', type=int, default=0)
+parser.add_argument('--local', type=int, default=5)
 parser.add_argument('modelname', type=str)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--subset', type=int, default=0)
@@ -117,14 +117,18 @@ elif args.rnnd:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
     d = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
-elif args.duald:
+elif args.multid:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
     drnn = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
     dcnn = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()])
-    d = model.ManyDiscriminator(d_list =[drnn, dcnn])
+    d_local = model.LocalDiscriminatorWrapper(drnn, args.framesize//5, args.local)
+    drnn2 = cls(frame_size=args.framesize, state_size=args.statesize//2, length=args.amplitudes,
+            approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
+    d_local2 = model.LocalDiscriminatorWrapper(drnn2, args.framesize//5, args.local*2)
+    d = model.ManyDiscriminator(d_list =[drnn, dcnn, d_local2])
 else:
-    print 'Specify either --cnnd or --rnnd or --duald'
+    print 'Specify either --cnnd --rnnd --multid'
     sys.exit(1)
 
 # Computation graph
@@ -135,7 +139,8 @@ lambda_ = TF.placeholder(TF.float32, shape=())
 x_fake = g.generate(batch_size=batch_size, length=args.amplitudes)
 comp, d_real, d_fake, pen, _, _ = d.compare(x_real, x_fake, lambda_=lambda_)
 comp_verify, d_verify_1, d_verify_2, pen_verify, _, _ = d.compare(x_real, x_real2, lambda_=lambda_)
-loss_d = comp
+hack = TF.reduce_mean(TF.square(d_real)) + TF.reduce_mean(TF.square(d_fake))
+loss_d = comp + hack/100000
 loss_g = TF.reduce_mean(-d_fake)
 
 x = g.generate(z=z)         # Sample audio from fixed noise
@@ -159,33 +164,6 @@ g_summaries = [
         ]
 audio_gen = TF.summary.audio('sample', x, 8000)
 
-# Process local discriminators if specified
-if args.local:
-    # For RNN, supporting second-order derivatives for variable-length
-    # is, if at all possible, extremely complicated, as TF.while_loop()
-    # (hence TF.nn.dynamic_rnn()) does not support second-order
-    # gradients and the development team has no plan to do so.
-    # If we ever want to support variable length, the best thing I
-    # can think of is: train the model with a fixed length for a while,
-    # save it, then rebuild the graph with a different length, and
-    # restore the weights (like what https://arxiv.org/abs/1706.01399
-    # did for curriculum learning)
-    
-    d_local = model.LocalDiscriminatorWrapper(drnn, args.framesize//5, args.local)
-    comp_local, d_real_local, d_fake_local, pen_local, _, _ = \
-            d_local.compare(x_real, x_fake, lambda_=lambda_)
-    loss_d += comp_local
-    loss_g += TF.reduce_mean(-d_fake_local)
-
-    d_summaries += [
-            util.summarize_var(comp_local, 'comp_local', mean=True),
-            util.summarize_var(d_real_local, 'd_real_local', mean=True),
-            util.summarize_var(d_fake_local, 'd_fake_local', mean=True),
-            util.summarize_var(pen_local, 'pen_local', mean=True, std=True),
-            ]
-    g_summaries += [
-            util.summarize_var(d_fake_local, 'd_fake_local_g', mean=True),
-            ]
 
 d_valid_summaries = d_summaries + [
         util.summarize_var(comp_verify, 'comp_verify', mean=True),
