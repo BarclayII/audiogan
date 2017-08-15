@@ -544,25 +544,19 @@ class ManyDiscriminator(Model):
         self.num_d = len(d_list)
         
     def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
-        penalty = 0
-        for d in self.d_list:
-            penalty += d.grad_penalty(x_real, x_fake, c, **kwargs)
-        return penalty
+        return sum([d.grad_penalty(x_real, x_fake, c, **kwargs) for d in self.d_list])
 
     def get_trainable_weights(self, **kwargs):
         all_listed = [TF.get_collection(
                 TF.GraphKeys.TRAINABLE_VARIABLES,
                 scope=d.name
                 ) for d in self.d_list]
-        return reduce(lambda q,p: q+p, all_listed)
+        return sum(all_listed)
 
     def call(self, x, c=None, **kwargs):
-        d, _ = self.d_list[0].discriminate(x, c, **kwargs)
-        for dis in self.d_list[1:]:
-            d_next, _ = dis.discriminate(x, c, **kwargs)
-            d += d_next
+        d_list, d_pred = zip(*[d.discriminate(x, c, **kwargs) for d in self.d_list])
 
-        return d, None
+        return sum(d_list), None        # Aggregate d_pred here
     
     def compare(self,
                 x_real,
@@ -574,19 +568,16 @@ class ManyDiscriminator(Model):
                 **kwargs):
         num_d = self.num_d
         cond_input = mode == 'conditional_input'
-        l = dr = df = p = drp = dfp = 0
-        for d in self.d_list:
-            l1, dr1, df1, p1, drp1, dfp1 = d.compare(x_real, x_fake, grad_penalty, lambda_, c, mode, **kwargs)
-            l += l1/num_d
-            dr += dr1/num_d
-            df += df1/num_d
-            p += p1/num_d
-            if cond_input:
-                drp += drp1/num_d
-                dfp += dfp1/num_d
-        if not cond_input:
-            drp = None
-            dfp = None
+        l1, dr1, df1, p1, drp1, dfp1 = zip(
+                *[d.compare(x_real, x_fake, grad_penalty, lambda_, c, mode, **kwargs)
+                    for d in self.d_list])
+        l = sum(l1) / num_d
+        dr = sum(dr1) / num_d
+        df = sum(df1) / num_d
+        p = sum(p1) / num_d
+        if cond_input:
+            drp = sum(drp1) / num_d
+            dfp = sum(dfp1) / num_d
         return l, dr, df, p, drp, dfp
 
 class LocalDiscriminatorWrapper(WGANCritic):
