@@ -49,6 +49,7 @@ parser.add_argument('--critic_iter', default=5, type=int)
 parser.add_argument('--cnng', action='store_true')
 parser.add_argument('--rnng', action='store_true')
 parser.add_argument('--cnnd', action='store_true')
+parser.add_argument('--duald', action='store_true')
 parser.add_argument('--rnnd', action='store_true')
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
@@ -116,8 +117,14 @@ elif args.rnnd:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
     d = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
+elif args.duald:
+    cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
+    rnn = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
+            approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
+    cnn = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()])
+    d = model.DualDiscriminator(rnn=rnn,cnn=cnn)
 else:
-    print 'Specify either --cnnd or --rnnd'
+    print 'Specify either --cnnd or --rnnd or --duald'
     sys.exit(1)
 
 # Computation graph
@@ -163,7 +170,8 @@ if args.local:
     # save it, then rebuild the graph with a different length, and
     # restore the weights (like what https://arxiv.org/abs/1706.01399
     # did for curriculum learning)
-    d_local = model.LocalDiscriminatorWrapper(d, args.framesize, args.local)
+    
+    d_local = model.LocalDiscriminatorWrapper(d.rnn, args.framesize//5, args.local)
     comp_local, d_real_local, d_fake_local, pen_local, _, _ = \
             d_local.compare(x_real, x_fake, lambda_=lambda_)
     loss_d += comp_local
