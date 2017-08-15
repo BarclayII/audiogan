@@ -33,7 +33,7 @@ class Model(object):
     @property
     def saver(self):
         if not hasattr(self, '_saver'):
-            self._saver = TF.train.Saver()
+            self._saver = TF.train.Saver(var_list=self.get_weights())
         return self._saver
 
     def save(self, path):
