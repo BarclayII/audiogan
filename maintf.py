@@ -49,7 +49,7 @@ parser.add_argument('--critic_iter', default=5, type=int)
 parser.add_argument('--cnng', action='store_true')
 parser.add_argument('--rnng', action='store_true')
 parser.add_argument('--cnnd', action='store_true')
-parser.add_argument('--duald', action='store_true')
+parser.add_argument('--multid', action='store_true')
 parser.add_argument('--rnnd', action='store_true')
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
@@ -69,6 +69,7 @@ parser.add_argument('--local', type=int, default=5)
 parser.add_argument('modelname', type=str)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--subset', type=int, default=0)
+parser.add_argument('--metric', type=str, default='l2_loss')
 
 args = parser.parse_args()
 
@@ -120,12 +121,12 @@ elif args.rnnd:
 elif args.multid:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
     drnn = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
-            approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
-    dcnn = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()])
-    d_local = model.LocalDiscriminatorWrapper(drnn, args.framesize//5, args.local)
+            approx=not args.rnntd_precise, num_layers=args.rnnd_layers, metric=args.metric)
+    dcnn = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()],metric=args.metric)
+    d_local = model.LocalDiscriminatorWrapper(drnn, args.framesize//5, args.local,metric=args.metric)
     drnn2 = cls(frame_size=args.framesize, state_size=args.statesize//2, length=args.amplitudes,
-            approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
-    d_local2 = model.LocalDiscriminatorWrapper(drnn2, args.framesize//5, args.local*2)
+            approx=not args.rnntd_precise, num_layers=args.rnnd_layers,metric=args.metric)
+    d_local2 = model.LocalDiscriminatorWrapper(drnn2, args.framesize//5, args.local*2,metric=args.metric)
     d = model.ManyDiscriminator(d_list =[drnn, dcnn, d_local2])
 else:
     print 'Specify either --cnnd --rnnd --multid'
@@ -140,7 +141,13 @@ x_fake = g.generate(batch_size=batch_size, length=args.amplitudes)
 comp, d_real, d_fake, pen, _, _ = d.compare(x_real, x_fake, lambda_=lambda_)
 comp_verify, d_verify_1, d_verify_2, pen_verify, _, _ = d.compare(x_real, x_real2, lambda_=lambda_)
 
-loss_g = TF.reduce_mean(-d_fake)
+loss_d = comp
+if args.metric == 'Wasserstein':
+    loss_g = TF.reduce_mean(-d_fake)
+elif args.metric == 'l2_loss':
+    loss_g = TF.square(d_fake - 1)
+else:
+    print('not an eligible loss function. Use Wasserstein or l2_loss')
 
 x = g.generate(z=z)         # Sample audio from fixed noise
 

@@ -1,6 +1,7 @@
 
 from __future__ import division
 
+import sys
 import tensorflow as TF
 import itertools
 import keras.backend as K
@@ -9,7 +10,6 @@ import keras.models as KM
 import keras.activations as KA
 
 from cells import Conv2DLSTMCell, ProjectedLSTMCell, FeedbackMultiLSTMCell
-
 session = None
 
 def start():
@@ -325,8 +325,9 @@ class Discriminator(Model):
 
 
 class WGANCritic(Discriminator):
-    def __init__(self, **kwargs):
+    def __init__(self, metric='Wasserstein', **kwargs):
         super(WGANCritic, self).__init__(**kwargs)
+        self.metric = metric
 
     def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
         eps = K.random_uniform([K.shape(x_real)[0], 1])
@@ -354,7 +355,15 @@ class WGANCritic(Discriminator):
                 x_real, c=c if cond_input else None)
         d_fake, d_fake_pred = self.discriminate(
                 x_fake, c=c if cond_input else None)
-        loss = d_fake - d_real
+        
+        if self.metric == 'Wasserstein':
+            loss = d_fake - d_real
+        elif self.metric == 'l2_loss':
+            d_fake = TF.nn.sigmoid(d_fake)
+            d_real = TF.nn.sigmoid(d_real)
+            loss = TF.square(d_fake - 1) + TF.square(d_real - 0)
+        else:
+            print('not an eligible loss function. Use Wasserstein or l2_loss')
         penalty = (
                 self.grad_penalty(
                     x_real, x_fake, c=c if cond_input else None, **kwargs)
