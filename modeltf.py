@@ -372,6 +372,53 @@ class WGANCritic(Discriminator):
         return K.mean(loss), d_real, d_fake, penalty, d_real_pred, d_fake_pred
 
 
+class TimeDistributedCritic(Discriminator):
+    def __init__(self, metric='Wasserstein', **kwargs):
+        super(TimeDistributedCritic, self).__init__(**kwargs)
+        self.metric = metric
+
+    def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
+        eps = K.random_uniform([K.shape(x_real)[0], 1])
+        x_inter = eps * x_real + (1 - eps) * x_fake
+
+        d_inter, _ = self.discriminate(x_inter, c=c, sum_=False, **kwargs)
+        penalty = 0
+
+        for i in range(self._nframes):
+            grads = K.gradients(d_inter[:, i], x_inter)[0]
+            grad_norms = K.sqrt(K.sum(K.square(grads), axis=1))
+            penalty += K.square(grad_norms - 1)
+
+        return penalty
+
+    def compare(self,
+                x_real,
+                x_fake,
+                grad_penalty=True,
+                c=None,
+                mode='unconditional',
+                **kwargs):
+        # mode: 'unconditional', 'conditional_input'
+        cond_input = mode == 'conditional_input'
+
+        d_real, d_real_pred = self.discriminate(
+                x_real, c=c if cond_input else None)
+        d_fake, d_fake_pred = self.discriminate(
+                x_fake, c=c if cond_input else None)
+        
+        d_fake = TF.nn.sigmoid(d_fake)
+        d_real = TF.nn.sigmoid(d_real)
+        loss = TF.square(d_fake - 1) + TF.square(d_real - 0)
+        
+        penalty = (
+                self.grad_penalty(
+                    x_real, x_fake, c=c if cond_input else None, **kwargs)
+                if grad_penalty else K.constant(0)
+                )
+
+        return K.mean(loss), d_real, d_fake, penalty, d_real_pred, d_fake_pred
+
+
 class RNNDiscriminator(WGANCritic):
     def __init__(self,
                  frame_size=200,
@@ -446,7 +493,9 @@ class Conv1DDiscriminator(WGANCritic):
         return d[:, 0], None
 
 
-class RNNTimeDistributedDiscriminator(WGANCritic):
+class RNNTimeDistributedDiscriminator(TimeDistributedCritic):
+    # At every output from discriminator time step (concatenated from forward and backward),
+    # project to a single scalar output value
     def __init__(self,
                  frame_size=200,
                  state_size=100,
@@ -499,33 +548,16 @@ class RNNTimeDistributedDiscriminator(WGANCritic):
 
         x_unstack = TF.unstack(TF.transpose(_x, (1, 0, 2)))
 
-        d = self._rnn(lstms_f, x_unstack, 'fw')
-        if self._bidirectional:
-            d_bw = self._rnn(lstms_b, x_unstack[::-1], 'bw')    # reversed in axis 1
-            d = TF.concat([d, d_bw], axis=1)
+        h = TF.contrib.rnn.stack_bidirectional_rnn(lstms_f, lstms_b, x_unstack, dtype = TF.float32)[0]
+        h = TF.concat(h, axis=1)
+        w = TF.get_variable('w', shape=(2*self._state_size,), dtype=TF.float32)
+        b = TF.get_variable('b', shape=(), dtype=TF.float32)
+        d = TF.matmul(TF.reshape(h, (batch_size * nframes, 2*self._state_size)),
+                      TF.reshape(w, (2 * self._state_size, 1))) + b
+        d = TF.reshape(d, (batch_size, nframes))
+        
+        return d, None
 
-        return d if not sum_ else TF.reduce_sum(d, axis=1), None
-
-    def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
-        eps = K.random_uniform([K.shape(x_real)[0], 1])
-        x_inter = eps * x_real + (1 - eps) * x_fake
-
-        if self._approx:
-            d_inter, _ = self.discriminate(x_inter, c=c, **kwargs)
-
-            grads = K.gradients(d_inter, x_inter)[0]
-            grad_norms = K.sqrt(K.sum(K.square(grads), axis=1))
-            penalty = K.square(grad_norms - 1)
-        else:
-            d_inter, _ = self.discriminate(x_inter, c=c, sum_=False, **kwargs)
-            penalty = 0
-
-            for i in range(self._nframes):
-                grads = K.gradients(d_inter[:, i], x_inter)[0]
-                grad_norms = K.sqrt(K.sum(K.square(grads), axis=1))
-                penalty += K.square(grad_norms - 1)
-
-        return penalty
 
 class ManyDiscriminator(Model):
     
