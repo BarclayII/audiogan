@@ -123,11 +123,11 @@ elif args.multid:
     drnn = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers, metric=args.metric)
     dcnn = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()],metric=args.metric)
-    d_local = model.LocalDiscriminatorWrapper(drnn, args.framesize//5, args.local,metric=args.metric)
+    d_local = model.LocalDiscriminatorWrapper(drnn, args.local,metric=args.metric)
     drnn2 = cls(frame_size=args.framesize, state_size=args.statesize//2, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers,metric=args.metric)
     d_local2 = model.LocalDiscriminatorWrapper(drnn2, args.framesize//5, args.local*2,metric=args.metric)
-    d = model.ManyDiscriminator(d_list =[drnn, dcnn, d_local2])
+    d = model.ManyDiscriminator(d_list =[drnn, dcnn, d_local2, d_local])
 else:
     print 'Specify either --cnnd --rnnd --multid'
     sys.exit(1)
@@ -145,7 +145,7 @@ loss_d = comp
 if args.metric == 'Wasserstein':
     loss_g = TF.reduce_mean(-d_fake)
 elif args.metric == 'l2_loss':
-    loss_g = TF.square(d_fake - 0)
+    loss_g = TF.reduce_mean(TF.square(d_fake - 0))
 else:
     print('not an eligible loss function. Use Wasserstein or l2_loss')
 
@@ -168,7 +168,7 @@ g_summaries = [
         util.summarize_var(d_fake, 'd_fake_g', mean=True),
         TF.summary.histogram('x_fake_g', x_fake),
         ]
-audio_gen = TF.summary.audio('sample', x, 8000)
+audio_gen = TF.summary.audio('sample', x, 8000, max_outputs=batch_size)
 
 
 d_valid_summaries = d_summaries + [
