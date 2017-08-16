@@ -344,7 +344,6 @@ class WGANCritic(Discriminator):
                 x_real,
                 x_fake,
                 grad_penalty=True,
-                lambda_=10,
                 c=None,
                 mode='unconditional',
                 **kwargs):
@@ -369,7 +368,6 @@ class WGANCritic(Discriminator):
                     x_real, x_fake, c=c if cond_input else None, **kwargs)
                 if grad_penalty else K.constant(0)
                 )
-        loss += lambda_ * penalty
 
         return K.mean(loss), d_real, d_fake, penalty, d_real_pred, d_fake_pred
 
@@ -562,14 +560,13 @@ class ManyDiscriminator(Model):
                 x_real,
                 x_fake,
                 grad_penalty=True,
-                lambda_=10,
                 c=None,
                 mode='unconditional',
                 **kwargs):
         num_d = self.num_d
         cond_input = mode == 'conditional_input'
         l1, dr1, df1, p1, drp1, dfp1 = zip(
-                *[d.compare(x_real, x_fake, grad_penalty, lambda_, c, mode, **kwargs)
+                *[d.compare(x_real, x_fake, grad_penalty, c, mode, **kwargs)
                     for d in self.d_list])
         l = sum(l1) / num_d
         dr = sum(dr1) / num_d

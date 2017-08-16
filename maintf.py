@@ -61,11 +61,12 @@ parser.add_argument('--cnnd_config', type=str, default=default_cnnd_config)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--amplitudes', type=int, default=8000, help='# of amplitudes to generate')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--statesize', type=int, default=100, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=100, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=100, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=0.0)
 parser.add_argument('--ggradclip', type=float, default=0.0)
-parser.add_argument('--local', type=int, default=5)
+parser.add_argument('--local', type=int, default=1000)
 parser.add_argument('modelname', type=str)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--subset', type=int, default=0)
@@ -104,7 +105,7 @@ if args.cnng:
 elif args.rnng:
     g = model.RNNGenerator(
             frame_size=args.framesize, noise_size=args.noisesize,
-            state_size=args.statesize, num_layers=args.rnng_layers)
+            state_size=args.gstatesize, num_layers=args.rnng_layers)
     nframes = args.amplitudes // args.framesize
     z = TF.placeholder(TF.float32, shape=(None, nframes, args.noisesize))
     z_fixed = RNG.randn(batch_size, nframes, args.noisesize)
@@ -116,17 +117,17 @@ if args.cnnd:
     d = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()])
 elif args.rnnd:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
-    d = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
+    d = cls(frame_size=args.framesize, state_size=args.dstatesize, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
 elif args.multid:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
-    drnn = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
+    drnn = cls(frame_size=args.framesize, state_size=args.dstatesize, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers, metric=args.metric)
     dcnn = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()],metric=args.metric)
-    d_local = model.LocalDiscriminatorWrapper(drnn, args.local,metric=args.metric)
-    drnn2 = cls(frame_size=args.framesize, state_size=args.statesize//2, length=args.amplitudes,
+    d_local = model.LocalDiscriminatorWrapper(drnn, length=args.local,metric=args.metric)
+    drnn2 = cls(frame_size=args.framesize//2, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers,metric=args.metric)
-    d_local2 = model.LocalDiscriminatorWrapper(drnn2, args.framesize//5, args.local*2,metric=args.metric)
+    d_local2 = model.LocalDiscriminatorWrapper(drnn2, length=args.local*2,metric=args.metric)
     d = model.ManyDiscriminator(d_list =[drnn, dcnn, d_local2, d_local])
 else:
     print 'Specify either --cnnd --rnnd --multid'
@@ -138,10 +139,10 @@ x_real2 = TF.placeholder(TF.float32, shape=(None, args.amplitudes))
 lambda_ = TF.placeholder(TF.float32, shape=())
 
 x_fake = g.generate(batch_size=batch_size, length=args.amplitudes)
-comp, d_real, d_fake, pen, _, _ = d.compare(x_real, x_fake, lambda_=lambda_)
-comp_verify, d_verify_1, d_verify_2, pen_verify, _, _ = d.compare(x_real, x_real2, lambda_=lambda_)
+comp, d_real, d_fake, pen, _, _ = d.compare(x_real, x_fake)
+comp_verify, d_verify_1, d_verify_2, pen_verify, _, _ = d.compare(x_real, x_real2)
 
-loss_d = comp
+loss_d = comp + lambda_ * TF.reduce_mean(pen)
 if args.metric == 'Wasserstein':
     loss_g = TF.reduce_mean(-d_fake)
 elif args.metric == 'l2_loss':
@@ -245,22 +246,22 @@ if __name__ == '__main__':
             with Timer.new('load', print_=False):
                 epoch, batch_id, real_data = dataloader.next()
             with Timer.new('train_d', print_=False):
-                _, loss, d_sum = s.run([train_d, loss_d, d_summaries], 
+                _, cmp, d_sum = s.run([train_d, comp, d_summaries], 
                                        feed_dict={x_real: real_data, lambda_: l,
                                                   K.learning_phase():1})
-            print 'D', epoch, batch_id, loss, Timer.get('load'), Timer.get('train_d')
+            print 'D', epoch, batch_id, cmp, Timer.get('load'), Timer.get('train_d')
             d_train_writer.add_summary(d_sum, i * args.critic_iter + j + 1)
         i += 1
 
         _, _, real_data = dataloader_val.next()
         _, _, real_data2 = dataloader_val.next()
-        loss, loss_ver, d_ver1, d_ver2, d_sum = s.run(
-                [loss_d, comp_verify, d_verify_1, d_verify_2, d_valid_summaries],
+        cmp, cmp_ver, d_ver1, d_ver2, d_sum = s.run(
+                [comp, comp_verify, d_verify_1, d_verify_2, d_valid_summaries],
                 feed_dict={x_real: real_data,
                            x_real2: real_data2,
                            lambda_: l,
                            K.learning_phase():0})
-        print 'D-valid', loss, loss_ver, d_ver1.mean(), d_ver2.mean()
+        print 'D-valid', cmp, cmp_ver, d_ver1.mean(), d_ver2.mean()
         d_valid_writer.add_summary(d_sum, i * args.critic_iter)
 
         with Timer.new('train_g', print_=False):
