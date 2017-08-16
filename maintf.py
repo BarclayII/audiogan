@@ -145,7 +145,7 @@ loss_d = comp
 if args.metric == 'Wasserstein':
     loss_g = TF.reduce_mean(-d_fake)
 elif args.metric == 'l2_loss':
-    loss_g = TF.square(d_fake - 1)
+    loss_g = TF.square(d_fake - 0)
 else:
     print('not an eligible loss function. Use Wasserstein or l2_loss')
 
