@@ -61,7 +61,8 @@ parser.add_argument('--cnnd_config', type=str, default=default_cnnd_config)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--amplitudes', type=int, default=8000, help='# of amplitudes to generate')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--statesize', type=int, default=100, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=100, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=100, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=0.0)
 parser.add_argument('--ggradclip', type=float, default=0.0)
@@ -104,7 +105,7 @@ if args.cnng:
 elif args.rnng:
     g = model.RNNGenerator(
             frame_size=args.framesize, noise_size=args.noisesize,
-            state_size=args.statesize, num_layers=args.rnng_layers)
+            state_size=args.gstatesize, num_layers=args.rnng_layers)
     nframes = args.amplitudes // args.framesize
     z = TF.placeholder(TF.float32, shape=(None, nframes, args.noisesize))
     z_fixed = RNG.randn(batch_size, nframes, args.noisesize)
@@ -116,15 +117,15 @@ if args.cnnd:
     d = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()])
 elif args.rnnd:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
-    d = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
+    d = cls(frame_size=args.framesize, state_size=args.dstatesize, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers)
 elif args.multid:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
-    drnn = cls(frame_size=args.framesize, state_size=args.statesize, length=args.amplitudes,
+    drnn = cls(frame_size=args.framesize, state_size=args.dstatesize, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers, metric=args.metric)
     dcnn = model.Conv1DDiscriminator([map(int, c.split('-')) for c in args.cnnd_config.split()],metric=args.metric)
     d_local = model.LocalDiscriminatorWrapper(drnn, args.framesize//5, args.local,metric=args.metric)
-    drnn2 = cls(frame_size=args.framesize, state_size=args.statesize//2, length=args.amplitudes,
+    drnn2 = cls(frame_size=args.framesize, state_size=args.dstatesize//2, length=args.amplitudes,
             approx=not args.rnntd_precise, num_layers=args.rnnd_layers,metric=args.metric)
     d_local2 = model.LocalDiscriminatorWrapper(drnn2, args.framesize//5, args.local*2,metric=args.metric)
     d = model.ManyDiscriminator(d_list =[drnn, dcnn, d_local2])
