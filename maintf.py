@@ -70,12 +70,18 @@ parser.add_argument('--local', type=int, default=1000)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
+parser.add_argument('--just_run', type=str, default='')
 parser.add_argument('--loaditerations', type=int)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--subset', type=int, default=0)
 parser.add_argument('--metric', type=str, default='l2_loss')
 
 args = parser.parse_args()
+
+if args.just_run not in ['', 'gen', 'dis']:
+    print('just run should be empty string, gen, or dis. Other values not accepted')
+    sys.exit(0)
+
 
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
@@ -182,7 +188,10 @@ if args.dgradclip:
     grad_d = [(TF.clip_by_norm(_g, args.dgradclip), _v) for _g, _v in grad_d if _g is not None]
 train_g = opt_g.apply_gradients(grad_g)
 train_d = opt_d.apply_gradients(grad_d)
-
+if args.just_run == 'gen':
+    train_d = 0
+if args.just_run == 'dis':
+    train_g = 0
 
 d_summaries = [
         util.summarize_var(comp, 'comp', mean=True),
@@ -252,8 +261,12 @@ dataloader_val = _dataloader(batch_size, data, n_train_samples, nsamples)
 i = 0
 epoch = 1
 l = 10
-
+wavedir = 'wave_' + modelnamesave
 if __name__ == '__main__':
+    try:
+        os.mkdir(wavedir)
+    except:
+        pass
     s = model.start()
     d_train_writer.add_graph(s.graph)
     g_writer.add_graph(s.graph)
@@ -299,10 +312,12 @@ if __name__ == '__main__':
         if NP.any(NP.isnan(_)):
             print 'NaN generated'
             sys.exit(0)
-        if i % 50 == 0:
+        if i % 2 == 0:
             print 'Saving...'
             x_gen, x_sum = s.run([x, audio_gen], feed_dict={z: z_fixed,
                                                             K.learning_phase(): 0})
+            util.plot_waves(x_gen[:10,:], 5, 2, 
+                        fig_name= wavedir + '/global_picture_generated_%05d' % (i))
             g_writer.add_summary(x_sum, i * args.critic_iter)
             if i % 1000 == 0:
                 NP.save('%s%05d.npy' % (modelnamesave, i), x_gen)
