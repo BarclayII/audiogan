@@ -67,21 +67,31 @@ parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=0.0)
 parser.add_argument('--ggradclip', type=float, default=0.0)
 parser.add_argument('--local', type=int, default=1000)
-parser.add_argument('modelname', type=str)
+parser.add_argument('--modelname', type=str, default = '')
+parser.add_argument('--modelnamesave', type=str, default='')
+parser.add_argument('--modelnameload', type=str, default='')
+parser.add_argument('--loaditerations', type=int)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--subset', type=int, default=0)
 parser.add_argument('--metric', type=str, default='l2_loss')
 
 args = parser.parse_args()
 
-print args.modelname
+if len(args.modelname) > 0:
+    modelnamesave = args.modelname
+    modelnameload = None
+else:
+    modelnamesave = args.modelnamesave
+    modelnameload = args.modelnameload
+
+print modelnamesave
 print args
 
 batch_size = args.batchsize
 
 # Log directories
 logdir = args.logdir + '/%s-%s' % \
-        (args.modelname, datetime.datetime.strftime(datetime.datetime.now(), '%Y%m%d%H%M%S'))
+        (modelnamesave, datetime.datetime.strftime(datetime.datetime.now(), '%Y%m%d%H%M%S'))
 if not os.path.exists(logdir):
     os.mkdir(logdir)
 elif not os.path.isdir(logdir):
@@ -132,6 +142,7 @@ elif args.multid:
 else:
     print 'Specify either --cnnd --rnnd --multid'
     sys.exit(1)
+
 
 # Computation graph
 x_real = TF.placeholder(TF.float32, shape=(None, args.amplitudes))
@@ -248,6 +259,11 @@ if __name__ == '__main__':
     g_writer.add_graph(s.graph)
     s.run(TF.global_variables_initializer())
 
+    if modelnameload:
+        if len(modelnameload) > 0:
+            d.load('%s-dis-%05d' % (modelnameload, args.loaditerations))
+            g.load('%s-gen-%05d' % (modelnameload, args.loaditerations))
+    
     while True:
         _epoch = epoch
 
@@ -289,6 +305,6 @@ if __name__ == '__main__':
                                                             K.learning_phase(): 0})
             g_writer.add_summary(x_sum, i * args.critic_iter)
             if i % 1000 == 0:
-                NP.save('%s%05d.npy' % (args.modelname, i), x_gen)
-                g.save('%s-gen-%05d' % (args.modelname, i))
-                d.save('%s-dis-%05d' % (args.modelname, i))
+                NP.save('%s%05d.npy' % (modelnamesave, i), x_gen)
+                g.save('%s-gen-%05d' % (modelnamesave, i))
+                d.save('%s-dis-%05d' % (modelnamesave, i))
