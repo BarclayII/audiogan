@@ -3,6 +3,7 @@ import tensorflow as TF
 import modeltf as model
 import utiltf as util
 from keras import backend as K
+import scipy.misc
 
 import numpy as NP
 import numpy.random as RNG
@@ -48,6 +49,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=5, type=int)
 parser.add_argument('--cnng', action='store_true')
 parser.add_argument('--rnng', action='store_true')
+parser.add_argument('--rnncg', action='store_true')
 parser.add_argument('--cnnd', action='store_true')
 parser.add_argument('--multid', action='store_true')
 parser.add_argument('--rnnd', action='store_true')
@@ -119,6 +121,13 @@ if args.cnng:
     z = TF.placeholder(TF.float32, shape=(None, noise_size))
     z_fixed = RNG.randn(batch_size, noise_size)
 elif args.rnng:
+    g = model.RNNGenerator(
+            frame_size=args.framesize, noise_size=args.noisesize,
+            state_size=args.gstatesize, num_layers=args.rnng_layers)
+    nframes = args.amplitudes // args.framesize
+    z = TF.placeholder(TF.float32, shape=(None, nframes, args.noisesize))
+    z_fixed = RNG.randn(batch_size, nframes, args.noisesize)
+elif args.rnncg:
     g = model.RNNGenerator(
             frame_size=args.framesize, noise_size=args.noisesize,
             state_size=args.gstatesize, num_layers=args.rnng_layers)
@@ -312,14 +321,17 @@ if __name__ == '__main__':
         if NP.any(NP.isnan(_)):
             print 'NaN generated'
             sys.exit(0)
-        if i % 2 == 0:
+        if i % 10 == 0:
             print 'Saving...'
             x_gen, x_sum = s.run([x, audio_gen], feed_dict={z: z_fixed,
                                                             K.learning_phase(): 0})
-            util.plot_waves(x_gen[:10,:], 5, 2, 
-                        fig_name= wavedir + '/global_picture_generated_%05d' % (i))
+            #Doesnt work with Py2
+            #scipy.misc.imsave(wavedir + '/global_picture_generated_%05d.jpg' % (i),x_gen[j,:].astype('int16'))
+            #Doesnt work with prince because of $display
+            #util.plot_waves(x_gen[:10,:], 5, 2, 
+            #            fig_name= wavedir + '/global_picture_generated_%05d' % (i))
             g_writer.add_summary(x_sum, i * args.critic_iter)
-            if i % 1000 == 0:
+            if i % 100 == 0:
                 NP.save('%s%05d.npy' % (modelnamesave, i), x_gen)
                 g.save('%s-gen-%05d' % (modelnamesave, i))
                 d.save('%s-dis-%05d' % (modelnamesave, i))
