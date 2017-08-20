@@ -128,7 +128,7 @@ elif args.rnng:
     z = TF.placeholder(TF.float32, shape=(None, nframes, args.noisesize))
     z_fixed = RNG.randn(batch_size, nframes, args.noisesize)
 elif args.rnncg:
-    g = model.RNNGenerator(
+    g = model.RNNConvGenerator(
             frame_size=args.framesize, noise_size=args.noisesize,
             state_size=args.gstatesize, num_layers=args.rnng_layers)
     nframes = args.amplitudes // args.framesize
@@ -321,7 +321,7 @@ if __name__ == '__main__':
         if NP.any(NP.isnan(_)):
             print 'NaN generated'
             sys.exit(0)
-        if i % 10 == 0:
+        if i % 50 == 0:
             print 'Saving...'
             x_gen, x_sum = s.run([x, audio_gen], feed_dict={z: z_fixed,
                                                             K.learning_phase(): 0})
@@ -331,7 +331,7 @@ if __name__ == '__main__':
             #util.plot_waves(x_gen[:10,:], 5, 2, 
             #            fig_name= wavedir + '/global_picture_generated_%05d' % (i))
             g_writer.add_summary(x_sum, i * args.critic_iter)
-            if i % 100 == 0:
+            if i % 1000 == 0:
                 NP.save('%s%05d.npy' % (modelnamesave, i), x_gen)
                 g.save('%s-gen-%05d' % (modelnamesave, i))
                 d.save('%s-dis-%05d' % (modelnamesave, i))

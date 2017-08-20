@@ -93,6 +93,70 @@ class Generator(Model):
         return self(*args, **kwargs)
 
 
+class RNNConvGenerator(Generator):
+    # Sadly Keras' LSTM does not have output projection & feedback so I have
+    # to use raw Tensorflow here.
+    def __init__(self,
+                 frame_size=200,        # # of amplitudes to generate at a time
+                 noise_size=100,        # noise dimension at a time
+                 state_size=200,
+                 num_layers=1,
+                 cell=FeedbackMultiLSTMCell,
+                 **kwargs):
+        super(RNNConvGenerator, self).__init__(**kwargs)
+
+        self._frame_size = frame_size
+        self._noise_size = noise_size
+        self._state_size = state_size
+        self._cell = cell
+        self._num_layers = num_layers
+        self.config = [[10, 3, 1], [10, 3, 1]]
+
+    def call(self, batch_size=None, length=None, z=None, initial_h=None):
+        frame_size = self._frame_size
+        noise_size = self._noise_size
+        state_size = self._state_size
+        cell = self._cell
+
+        lstm_f = cell(
+                state_size, num_proj=frame_size, activation=TF.tanh,
+                num_layers=self._num_layers)
+
+        if z is None:
+            nframes = length // frame_size
+            z = TF.random_normal((batch_size, nframes, noise_size))
+        else:
+            batch_size = TF.shape(z)[0]
+
+        if initial_h is None:
+            initial_h = lstm_f.random_state(batch_size, TF.float32)
+
+        z_unstack = TF.unstack(TF.transpose(z, (1, 0, 2)))
+
+        x = TF.nn.static_rnn(
+                lstm_f, z_unstack, dtype=TF.float32,
+                initial_state=initial_h,
+                )[0]
+        x = TF.concat(x, axis=1)
+        x = TF.expand_dims(x, 1)
+        x = TF.expand_dims(x, -1)
+        x = self.build_conv(x)
+        x = KL.Conv2DTranspose(
+                filters=1, kernel_size=(1, 1), strides=(1, 1),
+                padding='same')(x)
+        x = TF.tanh(x)
+        x = x[:, 0, :, 0]
+        return x
+
+    def build_conv(self, x):
+        for num_filters, filter_size, filter_stride in self.config:
+            x = KL.Conv2DTranspose(
+                    filters=num_filters, kernel_size=(1, filter_size),
+                    strides=(1, filter_stride), padding='same')(x)
+            x = KL.LeakyReLU()(x)
+
+        return x
+
 class RNNGenerator(Generator):
     # Sadly Keras' LSTM does not have output projection & feedback so I have
     # to use raw Tensorflow here.
@@ -139,6 +203,7 @@ class RNNGenerator(Generator):
         x = TF.concat(x, axis=1)
 
         return x
+
 
 
 class Conv1DGenerator(Generator):
