@@ -1,4 +1,3 @@
-# -*- coding: utf8 -*-
 import tensorflow as TF
 import modeltf as model
 import utiltf as util
@@ -8,14 +7,13 @@ import scipy.misc
 import numpy as NP
 import numpy.random as RNG
 
-import h5py
-
 import argparse
 import sys
 import datetime
 import os
 
 from timer import Timer
+import dataset
 
 default_cnng_config = [
         (128, 5, 1),
@@ -77,13 +75,14 @@ parser.add_argument('--loaditerations', type=int)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--subset', type=int, default=0)
 parser.add_argument('--metric', type=str, default='l2_loss')
+parser.add_argument('--dataset', type=str, default='dataset.h5')
+parser.add_argument('--conditional', action='store_true')
 
 args = parser.parse_args()
 
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-
 
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
@@ -183,32 +182,11 @@ d_train_writer = TF.summary.FileWriter(log_train_d)
 d_valid_writer = TF.summary.FileWriter(log_valid_d)
 g_writer = TF.summary.FileWriter(log_train_g)
 
-# Optimizer
-opt_g = TF.train.AdamOptimizer()
-opt_d = TF.train.AdamOptimizer()
-with TF.control_dependencies(TF.get_collection(TF.GraphKeys.UPDATE_OPS)):
-    grad_g = opt_g.compute_gradients(loss_g, var_list=g.get_trainable_weights())
-    grad_d = opt_d.compute_gradients(loss_d, var_list=d.get_trainable_weights())
-if args.ggradclip:
-    pre_clipped_grad_g = [TF.norm(g_) for g_, v in grad_g if g_ is not None]
-    pre_clipped_grad_d = [TF.norm(g_) for g_, v in grad_d if g_ is not None]
-    grad_g = [(TF.clip_by_norm(_g, args.ggradclip), _v) for _g, _v in grad_g if _g is not None]
-if args.dgradclip:
-    grad_d = [(TF.clip_by_norm(_g, args.dgradclip), _v) for _g, _v in grad_d if _g is not None]
-train_g = opt_g.apply_gradients(grad_g)
-train_d = opt_d.apply_gradients(grad_d)
-if args.just_run == 'gen':
-    train_d = 0
-if args.just_run == 'dis':
-    train_g = 0
-
 d_summaries = [
         util.summarize_var(comp, 'comp', mean=True),
         util.summarize_var(d_real, 'd_real', mean=True),
         util.summarize_var(d_fake, 'd_fake', mean=True),
         util.summarize_var(pen, 'pen', mean=True, std=True),
-        util.summarize_var(pre_clipped_grad_g, 'pre_clipped_grad_g', min_=True, max_=True, mean=True, std=True),
-        util.summarize_var(pre_clipped_grad_d, 'pre_clipped_grad_d', min_=True, max_=True, mean=True, std=True),
         TF.summary.histogram('x_real', x_real),
         TF.summary.histogram('x_fake', x_fake),
         ]
@@ -218,7 +196,6 @@ g_summaries = [
         ]
 audio_gen = TF.summary.audio('sample', x, 8000, max_outputs=batch_size)
 
-
 d_valid_summaries = d_summaries + [
         util.summarize_var(comp_verify, 'comp_verify', mean=True),
         util.summarize_var(d_verify_1, 'd_verify_1', mean=True),
@@ -227,45 +204,36 @@ d_valid_summaries = d_summaries + [
         util.summarize_var(pen_verify, 'pen_verify', mean=True, std=True),
         ]
 
-
-
-
+# Optimizer
+opt_g = TF.train.AdamOptimizer()
+opt_d = TF.train.AdamOptimizer()
+with TF.control_dependencies(TF.get_collection(TF.GraphKeys.UPDATE_OPS)):
+    grad_g = opt_g.compute_gradients(loss_g, var_list=g.get_trainable_weights())
+    grad_d = opt_d.compute_gradients(loss_d, var_list=d.get_trainable_weights())
+if args.ggradclip:
+    pre_clipped_grad_g = [TF.norm(g_) for g_, v in grad_g if g_ is not None]
+    grad_g = [(TF.clip_by_norm(_g, args.ggradclip), _v) for _g, _v in grad_g if _g is not None]
+    g_summaries.append(
+        util.summarize_var(pre_clipped_grad_g, 'pre_clipped_grad_g', min_=True, max_=True, mean=True, std=True)
+        )
+if args.dgradclip:
+    pre_clipped_grad_d = [TF.norm(g_) for g_, v in grad_d if g_ is not None]
+    grad_d = [(TF.clip_by_norm(_g, args.dgradclip), _v) for _g, _v in grad_d if _g is not None]
+    d_summaries.append(
+        util.summarize_var(pre_clipped_grad_d, 'pre_clipped_grad_d', min_=True, max_=True, mean=True, std=True)
+        )
+train_g = opt_g.apply_gradients(grad_g)
+train_d = opt_d.apply_gradients(grad_d)
+if args.just_run == 'gen':
+    train_d = 0
+if args.just_run == 'dis':
+    train_g = 0
 
 d_summaries = TF.summary.merge(d_summaries)
 d_valid_summaries = TF.summary.merge(d_valid_summaries)
 g_summaries = TF.summary.merge(g_summaries)
 
-dataset = h5py.File('dataset.h5')
-data = dataset['data']
-nsamples = data.shape[0]
-if args.subset:
-    nsample_indices = RNG.permutation(range(nsamples))[:args.subset]
-    data = data[sorted(nsample_indices)]
-    nsamples = args.subset
-n_train_samples = nsamples // 10 * 9
-def _dataloader(batch_size, data, lower, upper):
-    epoch = 1
-    batch = 0
-    idx = RNG.permutation(range(lower, upper))
-    cur = 0
-
-    while True:
-        indices = []
-        for i in range(batch_size):
-            if cur == len(idx):
-                cur = 0
-                idx_set = list(set(range(lower, upper)) - set(indices))
-                idx = RNG.permutation(idx_set)
-                epoch += 1
-                batch = 0
-            indices.append(idx[cur])
-            cur += 1
-        sample = data[sorted(indices)]
-        yield epoch, batch, NP.array(sample)[:, :args.amplitudes]
-        batch += 1
-
-dataloader = _dataloader(batch_size, data, 0, n_train_samples)
-dataloader_val = _dataloader(batch_size, data, n_train_samples, nsamples)
+dataloader, dataloader_val = dataset.dataloader(batch_size, args)
 
 i = 0
 epoch = 1
