@@ -1,6 +1,8 @@
 
 import tensorflow as TF
 import keras.layers as KL
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 

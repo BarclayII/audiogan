@@ -110,7 +110,7 @@ class RNNConvGenerator(Generator):
         self._state_size = state_size
         self._cell = cell
         self._num_layers = num_layers
-        self.config = [[10, 3, 1], [10, 3, 1]]
+        self.config = [[100, 3, 1], [100, 3, 1]]
 
     def call(self, batch_size=None, length=None, z=None, initial_h=None):
         frame_size = self._frame_size
@@ -140,7 +140,8 @@ class RNNConvGenerator(Generator):
         x = TF.concat(x, axis=1)
         x = TF.expand_dims(x, 1)
         x = TF.expand_dims(x, -1)
-        x = self.build_conv(x)
+        x = TF.tanh(x)
+        x = self.build_dense_conv(x)
         x = KL.Conv2DTranspose(
                 filters=1, kernel_size=(1, 1), strides=(1, 1),
                 padding='same')(x)
@@ -148,13 +149,13 @@ class RNNConvGenerator(Generator):
         x = x[:, 0, :, 0]
         return x
 
-    def build_conv(self, x):
+    def build_dense_conv(self, x):
         for num_filters, filter_size, filter_stride in self.config:
-            x = KL.Conv2DTranspose(
+            x_next = KL.Conv2DTranspose(
                     filters=num_filters, kernel_size=(1, filter_size),
                     strides=(1, filter_stride), padding='same')(x)
-            x = KL.LeakyReLU()(x)
-
+            x_next = TF.tanh(x_next)
+            x = TF.concat([x, x_next], -1)
         return x
 
 class RNNGenerator(Generator):

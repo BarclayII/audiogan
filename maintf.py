@@ -327,9 +327,8 @@ if __name__ == '__main__':
                                                             K.learning_phase(): 0})
             #Doesnt work with Py2
             #scipy.misc.imsave(wavedir + '/global_picture_generated_%05d.jpg' % (i),x_gen[j,:].astype('int16'))
-            #Doesnt work with prince because of $display
-            #util.plot_waves(x_gen[:10,:], 5, 2, 
-            #            fig_name= wavedir + '/global_picture_generated_%05d' % (i))
+            util.plot_waves(x_gen[:10,:], 5, 2, 
+                        fig_name= wavedir + '/global_picture_generated_%05d' % (i))
             g_writer.add_summary(x_sum, i * args.critic_iter)
             if i % 1000 == 0:
                 NP.save('%s%05d.npy' % (modelnamesave, i), x_gen)
