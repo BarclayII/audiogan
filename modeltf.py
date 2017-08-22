@@ -8,6 +8,7 @@ import keras.backend as K
 import keras.layers as KL
 import keras.models as KM
 import keras.activations as KA
+import utiltf as util
 
 from cells import Conv2DLSTMCell, ProjectedLSTMCell, FeedbackMultiLSTMCell
 session = None
@@ -65,6 +66,46 @@ class Model(object):
     def call(self, *args, **kwargs):
         raise NotImplementedError
 
+# Embedding models
+
+class Embedder(Model):
+    def embed(self, *args, **kwargs):
+        return self(*args, **kwargs)
+
+class CharRNNEmbedder(Embedder):
+    def __init__(self,
+                 embed_size=100,
+                 n_possible_chars=256,
+                 char_embed_size=None,
+                 cell=TF.nn.rnn_cell.LSTMCell,
+                 **kwargs):
+        super(CharRNNEmbedder, self).__init__(**kwargs)
+        self._embed_size = embed_size
+        self._nchars = n_possible_chars
+        self._cell = cell
+        self._char_embed_size = char_embed_size or embed_size
+
+    def call(self, chars, length):
+        '''
+        @chars: Tensor of int (batch_size, max_n_chars)
+        @length: Tensor of int (batch_size,)
+        '''
+        embed_seq = TF.contrib.layers.embed_sequence(
+                chars, self._nchars, self._char_embed_size)
+
+        lstms_f = [self._cell(embed_size // 2)]
+        lstms_b = [self._cell(embed_size // 2)]
+
+        x_unstack = TF.unstack(TF.transpose(embed_seq, (1, 0, 2)))
+
+        outputs, state_fw, state_bw = TF.contrib.rnn.stack_bidirectional_rnn(
+                lstms_f, lstms_b, x_unstack, dtype=TF.float32)
+        h_fw = state_fw[0][1]
+        h_bw = state_bw[0][1]
+
+        h = TF.concat([h_fw, h_bw], axis=1)
+        return h
+
 # Joint Embedding Mixers
 
 class Mixer(Model):
@@ -112,7 +153,7 @@ class RNNConvGenerator(Generator):
         self._num_layers = num_layers
         self.config = [[100, 3, 1], [100, 3, 1]]
 
-    def call(self, batch_size=None, length=None, z=None, initial_h=None):
+    def call(self, batch_size=None, length=None, z=None, c=None, initial_h=None):
         frame_size = self._frame_size
         noise_size = self._noise_size
         state_size = self._state_size
@@ -127,6 +168,9 @@ class RNNConvGenerator(Generator):
             z = TF.random_normal((batch_size, nframes, noise_size))
         else:
             batch_size = TF.shape(z)[0]
+
+        if c is None:
+            z = TF.concat([z, c], axis=1)
 
         if initial_h is None:
             initial_h = lstm_f.random_state(batch_size, TF.float32)
@@ -176,7 +220,7 @@ class RNNGenerator(Generator):
         self._cell = cell
         self._num_layers = num_layers
 
-    def call(self, batch_size=None, length=None, z=None, initial_h=None):
+    def call(self, batch_size=None, length=None, z=None, c=None, initial_h=None):
         frame_size = self._frame_size
         noise_size = self._noise_size
         state_size = self._state_size
@@ -191,6 +235,9 @@ class RNNGenerator(Generator):
             z = TF.random_normal((batch_size, nframes, noise_size))
         else:
             batch_size = TF.shape(z)[0]
+
+        if c is not None:
+            z = TF.concat([z, c], axis=1)
 
         if initial_h is None:
             initial_h = lstm_f.random_state(batch_size, TF.float32)
@@ -389,11 +436,23 @@ class Discriminator(Model):
     def discriminate(self, *args, **kwargs):
         return self(*args, **kwargs)
 
-
-class WGANCritic(Discriminator):
-    def __init__(self, metric='Wasserstein', **kwargs):
-        super(WGANCritic, self).__init__(**kwargs)
+    def __init__(self,
+                 metric='wasserstein',
+                 constraint=None,
+                 mode='unconditional',
+                 **kwargs):
+        # constraint: None, 'gp', 'wc'
+        super(Discriminator, self).__init__(**kwargs)
         self.metric = metric
+        self.constraint = constraint
+        self.mode = mode
+        if constraint.startswith('noise:'):
+            self.noise_scale = float(constraint[6:])
+            self.noise = True
+            self.gp = False
+        elif constraint == 'gp':
+            self.noise = False
+            self.gp = True
 
     def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
         eps = K.random_uniform([K.shape(x_real)[0], 1])
@@ -409,40 +468,41 @@ class WGANCritic(Discriminator):
     def compare(self,
                 x_real,
                 x_fake,
-                grad_penalty=True,
                 c=None,
-                mode='unconditional',
+                c_wrong=None,   # for conditional_input mode (Reed et al., 2016)
                 **kwargs):
-        # mode: 'unconditional', 'conditional_input'
-        cond_input = mode == 'conditional_input'
+        # mode: 'unconditional', 'conditional_input', 'aux_classifier'
+        cond_input = self.mode == 'conditional_input'
+
+        if self.noise:
+            x_real = x_real + TF.random_normal(TF.shape(x_real)) * self.noise_scale
+            x_fake = x_fake + TF.random_normal(TF.shape(x_fake)) * self.noise_scale
 
         d_real, d_real_pred = self.discriminate(
                 x_real, c=c if cond_input else None)
         d_fake, d_fake_pred = self.discriminate(
                 x_fake, c=c if cond_input else None)
         
-        if self.metric == 'Wasserstein':
-            loss = d_fake - d_real
-        elif self.metric == 'l2_loss':
-            d_fake = TF.nn.sigmoid(d_fake)
-            d_real = TF.nn.sigmoid(d_real)
-            loss = TF.square(d_fake - 1) + TF.square(d_real - 0)
+        if hasattr(util, self.metric):
+            loss_fn = getattr(util, self.metric)
         else:
             print('not an eligible loss function. Use Wasserstein or l2_loss')
-        penalty = (
-                self.grad_penalty(
+        loss = loss_fn(d_real, d_fake)
+        if cond_input:
+            d_wrong, d_wrong_pred = self.discriminate(x_real, c=c_wrong)
+            loss += loss_fn(d_real, d_wrong)
+
+        if self.gp:
+            penalty = self.grad_penalty(
                     x_real, x_fake, c=c if cond_input else None, **kwargs)
-                if grad_penalty else K.constant(0)
-                )
+        else:
+            penalty = K.constant(0)
+        # XXX: do we need gradient penalty for real-audio/wrong-word?
 
         return K.mean(loss), d_real, d_fake, penalty, d_real_pred, d_fake_pred
 
 
 class TimeDistributedCritic(Discriminator):
-    def __init__(self, metric='Wasserstein', **kwargs):
-        super(TimeDistributedCritic, self).__init__(**kwargs)
-        self.metric = metric
-
     def grad_penalty(self, x_real, x_fake, c=None, **kwargs):
         eps = K.random_uniform([K.shape(x_real)[0], 1])
         x_inter = eps * x_real + (1 - eps) * x_fake
@@ -457,35 +517,8 @@ class TimeDistributedCritic(Discriminator):
 
         return penalty
 
-    def compare(self,
-                x_real,
-                x_fake,
-                grad_penalty=True,
-                c=None,
-                mode='unconditional',
-                **kwargs):
-        # mode: 'unconditional', 'conditional_input'
-        cond_input = mode == 'conditional_input'
 
-        d_real, d_real_pred = self.discriminate(
-                x_real, c=c if cond_input else None)
-        d_fake, d_fake_pred = self.discriminate(
-                x_fake, c=c if cond_input else None)
-        
-        d_fake = TF.nn.sigmoid(d_fake)
-        d_real = TF.nn.sigmoid(d_real)
-        loss = TF.square(d_fake - 1) + TF.square(d_real - 0)
-        
-        penalty = (
-                self.grad_penalty(
-                    x_real, x_fake, c=c if cond_input else None, **kwargs)
-                if grad_penalty else K.constant(0)
-                )
-
-        return K.mean(loss), d_real, d_fake, penalty, d_real_pred, d_fake_pred
-
-
-class RNNDiscriminator(WGANCritic):
+class RNNDiscriminator(Discriminator):
     def __init__(self,
                  frame_size=200,
                  state_size=100,
@@ -539,7 +572,7 @@ class RNNDiscriminator(WGANCritic):
         return d[:, 0], None
 
 
-class Conv1DDiscriminator(WGANCritic):
+class Conv1DDiscriminator(Discriminator):
     def __init__(self, config, **kwargs):
         super(Conv1DDiscriminator, self).__init__(**kwargs)
 
@@ -568,8 +601,6 @@ class RNNTimeDistributedDiscriminator(TimeDistributedCritic):
                  length=8000,
                  num_layers=1,
                  cell=TF.nn.rnn_cell.LSTMCell,
-                 bidirectional=True,
-                 approx=True,
                  **kwargs):
         super(RNNTimeDistributedDiscriminator, self).__init__(**kwargs)
 
@@ -579,24 +610,6 @@ class RNNTimeDistributedDiscriminator(TimeDistributedCritic):
         self._length = length
         self._num_layers = num_layers
         self._nframes = length // frame_size
-        self._approx = approx
-        self._bidirectional = bidirectional
-
-    def _rnn(self, cells, x, scope):
-        batch_size = TF.shape(x[0])[0]
-        nframes = self._nframes
-        with TF.variable_scope(scope, reuse=self.built):
-            h = x
-            for cell in cells:
-                h, _ = TF.nn.static_rnn(cell, h, dtype=TF.float32)
-            h = TF.concat(h, axis=1)
-            w = TF.get_variable('w', shape=(self._state_size,), dtype=TF.float32)
-            b = TF.get_variable('b', shape=(), dtype=TF.float32)
-            d = TF.matmul(TF.reshape(h, (batch_size * nframes, self._state_size)),
-                          TF.reshape(w, (self._state_size, 1))) + b
-            d = TF.reshape(d, (batch_size, nframes))
-
-        return d
 
     def call(self, x, c=None, sum_=True, **kwargs):
         batch_size = TF.shape(x)[0]
@@ -625,8 +638,7 @@ class RNNTimeDistributedDiscriminator(TimeDistributedCritic):
         return d, None
 
 
-class ManyDiscriminator(Model):
-    
+class ManyDiscriminator(Discriminator):
     def __init__(self, d_list, **kwargs):
         super(ManyDiscriminator, self).__init__(**kwargs)
         self.d_list = d_list
@@ -657,14 +669,13 @@ class ManyDiscriminator(Model):
     def compare(self,
                 x_real,
                 x_fake,
-                grad_penalty=True,
                 c=None,
                 mode='unconditional',
                 **kwargs):
         num_d = self.num_d
         cond_input = mode == 'conditional_input'
         l1, dr1, df1, p1, drp1, dfp1 = zip(
-                *[d.compare(x_real, x_fake, grad_penalty, c, mode, **kwargs)
+                *[d.compare(x_real, x_fake, c, mode, **kwargs)
                     for d in self.d_list])
         l = sum(l1) / num_d
         dr = sum(dr1) / num_d
@@ -678,7 +689,7 @@ class ManyDiscriminator(Model):
             dfp = None
         return l, dr, df, p, drp, dfp
 
-class LocalDiscriminatorWrapper(WGANCritic):
+class LocalDiscriminatorWrapper(Discriminator):
     '''
     Discriminates a chunk of audio.
     Usage:
