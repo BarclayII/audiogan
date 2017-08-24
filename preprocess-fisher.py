@@ -14,9 +14,10 @@ import librosa
 import numpy as NP
 from collections import Counter
 import multiprocessing as MP
-import shutil
 import tempfile
 import logging
+import sh
+import shutil
 
 NUM_WORKERS = 10
 sph2pipe = 'sph2pipe_v2.5/sph2pipe'
@@ -104,14 +105,18 @@ def worker(q, p, console, workdir):
         if tran is None:
             break
         output = wav[:-4] + '.TextGrid'
+        faavlog = wav[:-4] + '.FAAVlog'
+        errorlog = wav[:-4] + '.errorlog'
         with console:
             print tran, '+', wav, '->', output
 
         work_tran = os.path.join(workdir, os.path.basename(tran))
         work_wav = os.path.join(workdir, os.path.basename(wav))
         work_output = os.path.join(workdir, os.path.basename(output))
-        shutil.copy(tran, work_tran)
-        shutil.copy(wav, work_wav)
+        work_faavlog = os.path.join(workdir, os.path.basename(faavlog))
+        work_errorlog = os.path.join(workdir, os.path.basename(errorlog))
+        sh.cp(tran, work_tran)
+        sh.cp(wav, work_wav)
         subprocess.check_output(
                 ['python', faav_align, '-vn', work_wav, work_tran, work_output],
                 cwd=workdir,
@@ -143,6 +148,8 @@ def worker(q, p, console, workdir):
 
             p.put((wav, ' '.join(starts), ' '.join(ends), ' '.join(words)))
 
+        sh.rm('-f', work_tran, work_wav, work_output, work_faavlog, work_errorlog)
+
     p.put((None, None, None, None))
 
 if __name__ == '__main__':
@@ -157,7 +164,7 @@ if __name__ == '__main__':
             gname = fname[:-4] + '-trans.txt'
             trans[os.path.basename(fname)[:-4]] = gname
             print fname, '->', gname
-
+            '''
             f = open(fname)
             g = open(gname, 'w')
             for l in f:
@@ -171,6 +178,7 @@ if __name__ == '__main__':
                     continue
             g.close()
             f.close()
+            '''
 
     # Uncompress sphere files
     with open(sys.argv[2]) as sphere_file_list:
@@ -178,7 +186,9 @@ if __name__ == '__main__':
             fname = filename.strip()
             output = fname[:-4] + '.wav'
             print fname, '->', output
+            '''
             subprocess.check_output([sph2pipe, '-f', 'wav', fname, output])
+            '''
             wavs[os.path.basename(fname)[:-4]] = output
 
     # Prepare output HDF5/directory
@@ -248,4 +258,4 @@ if __name__ == '__main__':
     if write_h5:
         h5writer.close()
     for workdir in workdirs:
-        shutil.rmtree(workdir)
+        sh.rm('-rf', workdir)
