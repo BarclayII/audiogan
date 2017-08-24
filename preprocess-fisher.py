@@ -164,7 +164,7 @@ if __name__ == '__main__':
             gname = fname[:-4] + '-trans.txt'
             trans[os.path.basename(fname)[:-4]] = gname
             print fname, '->', gname
-            '''
+            #'''
             f = open(fname)
             g = open(gname, 'w')
             for l in f:
@@ -178,7 +178,7 @@ if __name__ == '__main__':
                     continue
             g.close()
             f.close()
-            '''
+            #'''
 
     # Uncompress sphere files
     with open(sys.argv[2]) as sphere_file_list:
@@ -186,9 +186,9 @@ if __name__ == '__main__':
             fname = filename.strip()
             output = fname[:-4] + '.wav'
             print fname, '->', output
-            '''
+            #'''
             subprocess.check_output([sph2pipe, '-f', 'wav', fname, output])
-            '''
+            #'''
             wavs[os.path.basename(fname)[:-4]] = output
 
     # Prepare output HDF5/directory
