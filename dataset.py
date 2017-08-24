@@ -3,7 +3,7 @@ import h5py
 import numpy.random as RNG
 import numpy as NP
 
-def _dataloader(batch_size, data, lower, upper, args):
+def _unconditional_dataloader(batch_size, data, lower, upper, args):
     epoch = 1
     batch = 0
     idx = RNG.permutation(range(lower, upper))
@@ -21,10 +21,10 @@ def _dataloader(batch_size, data, lower, upper, args):
             indices.append(idx[cur])
             cur += 1
         sample = data[sorted(indices)]
-        yield epoch, batch, NP.array(sample)[:, :args.amplitudes]
+        yield [epoch, batch, NP.array(sample)[:, :args.amplitudes]] + [None] * 6
         batch += 1
 
-def dataloader(batch_size, args):
+def unconditional_dataloader(batch_size, args):
     dataset = h5py.File(args.dataset)
     data = dataset['data']
     nsamples = data.shape[0]
@@ -34,7 +34,74 @@ def dataloader(batch_size, args):
         nsamples = args.subset
     n_train_samples = nsamples // 10 * 9
 
-    dataloader = _dataloader(batch_size, data, 0, n_train_samples, args)
-    dataloader_val = _dataloader(batch_size, data, n_train_samples, nsamples, args)
+    dataloader = _unconditional_dataloader(batch_size, data, 0, n_train_samples, args)
+    dataloader_val = _unconditional_dataloader(batch_size, data, n_train_samples, nsamples, args)
 
-    return dataloader, dataloader_val
+    return None, dataloader, dataloader_val
+
+def word_to_seq(word, maxcharlen):
+    char_seq = NP.zeros(maxcharlen, dtype=NP.int32)
+    char_seq[:len(word)] = [ord(c) for c in word]
+    return char_seq
+
+def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args):
+    epoch = 0
+    batch = 0
+    while True:
+        samples = []
+        batch += 1
+        for i in range(batch_size):
+            key = RNG.choice(keys)
+            key_wrong = RNG.choice(keys)
+            sample_idx = RNG.choice(dataset[key].shape[0])
+            sample_in = dataset[key][sample_idx]
+            sample_len = sample_in.shape[0]
+
+            sample_out = NP.zeros(maxlen)
+            sample_out[:sample_len] = sample_in[:sample_len]
+            sample_char_seq = word_to_seq(key, maxcharlen)
+            sample_char_seq_wrong = word_to_seq(key_wrong, maxcharlen)
+
+            samples.append((
+                sample_out, key, sample_char_seq, len(key),
+                key_wrong, sample_char_seq_wrong, len(key_wrong)
+                ))
+
+        yield [epoch, batch] + [NP.array(a) for a in zip(*samples)]
+
+def _valid_keys(keys, args):
+    keys = [k for k in keys if not (k[-1] == '-' or k[0] == '(')]
+    keys = [k for k in keys if len(k) >= args.minwordlen]
+    return keys
+
+def conditional_dataloader(batch_size, args):
+    dataset = h5py.File(args.dataset)
+    keys = _valid_keys(dataset.keys(), args)
+    keys = list(RNG.permutation(keys))
+    n_train_keys = len(keys) // 10 * 9
+    maxlen = max(dataset[k].shape[1] for k in keys)
+    maxcharlen = max(len(k) for k in keys)
+
+    dataloader = _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys[:n_train_keys], args)
+    dataloader_val = _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys[n_train_keys:], args)
+
+    return maxlen, dataloader, dataloader_val
+
+def pick_words(batch_size, args):
+    dataset = h5py.File(args.dataset)
+    keys = _valid_keys(dataset.keys(), args)
+    maxcharlen = max(len(k) for k in keys)
+
+    picked_keys = RNG.choice(keys, batch_size)
+    cseq = NP.array([word_to_seq(k, maxcharlen) for k in picked_keys])
+    clen = NP.array([len(k) for k in picked_keys])
+
+    return picked_keys, cseq, clen
+
+def dataloader(batch_size, args):
+    # Returns a generator which returns
+    # (epoch, batch, audio, word, char_seq, char_seq_len, word_wrong, char_seq_wrong, char_seq_wrong_len)
+    if not args.conditional:
+        return unconditional_dataloader(batch_size, args)
+    else:
+        return conditional_dataloader(batch_size, args)

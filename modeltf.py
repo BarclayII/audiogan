@@ -93,39 +93,16 @@ class CharRNNEmbedder(Embedder):
         embed_seq = TF.contrib.layers.embed_sequence(
                 chars, self._nchars, self._char_embed_size)
 
-        lstms_f = [self._cell(embed_size // 2)]
-        lstms_b = [self._cell(embed_size // 2)]
+        lstms_f = [self._cell(self._embed_size // 2)]
+        lstms_b = [self._cell(self._embed_size // 2)]
 
-        x_unstack = TF.unstack(TF.transpose(embed_seq, (1, 0, 2)))
-
-        outputs, state_fw, state_bw = TF.contrib.rnn.stack_bidirectional_rnn(
-                lstms_f, lstms_b, x_unstack, dtype=TF.float32)
+        outputs, state_fw, state_bw = TF.contrib.rnn.stack_bidirectional_dynamic_rnn(
+                lstms_f, lstms_b, embed_seq, dtype=TF.float32, sequence_length=length)
         h_fw = state_fw[0][1]
         h_bw = state_bw[0][1]
 
         h = TF.concat([h_fw, h_bw], axis=1)
         return h
-
-# Joint Embedding Mixers
-
-class Mixer(Model):
-    def mix(self, *args, **kwargs):
-        return self(*args, **kwargs)
-
-
-class MultiplyMixer(Mixer):
-    # Reference:
-    # https://github.com/shaform/DeepNetworks/blob/master/deep_networks/models/iwacgan.py
-    def call(self, z, c):
-        return z * c
-
-
-class ConcatMixer(Mixer):
-    # Reference:
-    # https://github.com/fairytale0011/Conditional-WassersteinGAN/blob/master/WGAN_AC.py
-    # Generative Adversarial Text to Image Synthesis (Reed et al, 2016)
-    def call(self, z, c):
-        return TF.concat([z, c], axis=1)
 
 # Generators
 
@@ -168,9 +145,11 @@ class RNNConvGenerator(Generator):
             z = TF.random_normal((batch_size, nframes, noise_size))
         else:
             batch_size = TF.shape(z)[0]
+            nframes = TF.shape(z)[1]
 
-        if c is None:
-            z = TF.concat([z, c], axis=1)
+        if c is not None:
+            c = TF.tile(TF.expand_dims(c, 1), (1, nframes, 1))
+            z = TF.concat([z, c], axis=2)
 
         if initial_h is None:
             initial_h = lstm_f.random_state(batch_size, TF.float32)
@@ -235,9 +214,11 @@ class RNNGenerator(Generator):
             z = TF.random_normal((batch_size, nframes, noise_size))
         else:
             batch_size = TF.shape(z)[0]
+            nframes = TF.shape(z)[1]
 
         if c is not None:
-            z = TF.concat([z, c], axis=1)
+            c = TF.tile(TF.expand_dims(c, 1), (1, nframes, 1))
+            z = TF.concat([z, c], axis=2)
 
         if initial_h is None:
             initial_h = lstm_f.random_state(batch_size, TF.float32)
@@ -441,7 +422,11 @@ class Discriminator(Model):
                  constraint=None,
                  mode='unconditional',
                  **kwargs):
-        # constraint: None, 'gp', 'wc'
+        # constraint:
+        # - None,
+        # - 'gp': Improved WGAN Training (Gulrajani et al., 2017)
+        # - 'wc': Wasserstein GAN (Arjovsky et al., 2017)
+        # - 'noise:xxx': Towards Principled Analysis of GAN (Arjovsky et al., 2016)
         super(Discriminator, self).__init__(**kwargs)
         self.metric = metric
         self.constraint = constraint

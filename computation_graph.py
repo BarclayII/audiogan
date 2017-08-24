@@ -1,24 +1,43 @@
 
 import tensorflow as TF
 import utiltf as util
+import modeltf as model
 
 class GAN(object):
-    def __init__(self, args, d, g, z):
+    def __init__(self, args, maxlen, d, g, z, e_g=None, e_d=None, cseq=None, clen=None):
         super(GAN, self).__init__()
 
         self.buf_ph = TF.placeholder(TF.uint8, shape=(None, None, None, 3))
         self.buf_plot_op = TF.summary.image('waveform', self.buf_ph, max_outputs=args.batchsize)
 
-class UnconditionalGAN(GAN):
-    def __init__(self, args, d, g, z):
-        super(UnconditionalGAN, self).__init__(args, d, g, z)
-        x_real = TF.placeholder(TF.float32, shape=(None, args.amplitudes))
-        x_real2 = TF.placeholder(TF.float32, shape=(None, args.amplitudes))
+        x_real = TF.placeholder(TF.float32, shape=(None, maxlen))
+        x_real2 = TF.placeholder(TF.float32, shape=(None, maxlen))
         lambda_ = TF.placeholder(TF.float32, shape=())
 
-        x_fake = g.generate(batch_size=args.batchsize, length=args.amplitudes)
-        comp, d_real, d_fake, pen, _, _ = d.compare(x_real, x_fake)
-        comp_verify, d_verify_1, d_verify_2, pen_verify, _, _ = d.compare(x_real, x_real2)
+        if args.conditional:
+            char_seq = TF.placeholder(TF.int32, shape=(None, None))
+            char_seq_len = TF.placeholder(TF.int32, shape=(None,))
+            char_seq_wrong = TF.placeholder(TF.int32, shape=(None, None))
+            char_seq_wrong_len = TF.placeholder(TF.int32, shape=(None,))
+
+            c_g = e_g.embed(char_seq, char_seq_len)
+            c_d = e_d.embed(char_seq, char_seq_len)
+            c_wrong_d = e_d.embed(char_seq_wrong, char_seq_wrong_len)
+
+            c_g_fixed = e_g.embed(cseq, clen)
+
+            self.char_seq = char_seq
+            self.char_seq_len = char_seq_len
+            self.char_seq_wrong = char_seq_wrong
+            self.char_seq_wrong_len = char_seq_wrong_len
+        else:
+            c_g_fixed = c_g = c_d = c_wrong_d = None
+
+        x_fake = g.generate(batch_size=args.batchsize, length=maxlen, c=c_g)
+        comp, d_real, d_fake, pen, _, _ = d.compare(
+                x_real, x_fake, c=c_d, c_wrong=c_wrong_d)
+        comp_verify, d_verify_1, d_verify_2, pen_verify, _, _ = d.compare(
+                x_real, x_real2, c=c_d, c_wrong=c_wrong_d)
 
         loss_d = comp + lambda_ * TF.reduce_mean(pen)
         metric_g = args.metric + '_g'
@@ -27,7 +46,7 @@ class UnconditionalGAN(GAN):
         else:
             raise ValueError('not an eligible loss function')
 
-        x = g.generate(z=z)
+        x = g.generate(z=z, c=c_g_fixed)
 
         d_summaries = [
                 util.summarize_var(comp, 'comp', mean=True),

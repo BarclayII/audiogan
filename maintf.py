@@ -13,7 +13,7 @@ import os
 
 from timer import Timer
 import dataset
-from computation_graph import UnconditionalGAN
+from computation_graph import GAN
 
 default_cnng_config = [
         (128, 5, 1),
@@ -79,6 +79,7 @@ parser.add_argument('--dataset', type=str, default='dataset.h5')
 parser.add_argument('--conditional', action='store_true')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--constraint', type=str, default='gp', help='none, gp, wc or noise')
+parser.add_argument('--minwordlen', type=int, default=1)
 
 args = parser.parse_args()
 
@@ -98,6 +99,12 @@ print args
 
 batch_size = args.batchsize
 
+if args.conditional:
+    maxlen, dataloader, dataloader_val = dataset.dataloader(batch_size, args)
+else:
+    maxlen = args.amplitudes
+    _, dataloader, dataloader_val = dataset.dataloader(batch_size, args)
+
 # Log directories
 log_train_d, log_valid_d, log_train_g = util.logdirs(args.logdir, modelnamesave)
 
@@ -105,26 +112,38 @@ log_train_d, log_valid_d, log_train_g = util.logdirs(args.logdir, modelnamesave)
 if args.cnng:
     cls = model.Conv1DGenerator if not args.resnet else model.ResNetGenerator
     g = cls([map(int, c.split('-')) for c in args.cnng_config.split()])
-    noise_size = args.amplitudes // g.multiplier
+    noise_size = maxlen // g.multiplier
     z = TF.placeholder(TF.float32, shape=(None, noise_size))
     z_fixed = RNG.randn(batch_size, noise_size)
 elif args.rnng:
     g = model.RNNGenerator(
             frame_size=args.framesize, noise_size=args.noisesize,
             state_size=args.gstatesize, num_layers=args.rnng_layers)
-    nframes = args.amplitudes // args.framesize
+    nframes = maxlen // args.framesize
     z = TF.placeholder(TF.float32, shape=(None, nframes, args.noisesize))
     z_fixed = RNG.randn(batch_size, nframes, args.noisesize)
 elif args.rnncg:
     g = model.RNNConvGenerator(
             frame_size=args.framesize, noise_size=args.noisesize,
             state_size=args.gstatesize, num_layers=args.rnng_layers)
-    nframes = args.amplitudes // args.framesize
+    nframes = maxlen // args.framesize
     z = TF.placeholder(TF.float32, shape=(None, nframes, args.noisesize))
     z_fixed = RNG.randn(batch_size, nframes, args.noisesize)
 else:
     print 'Specify either --cnng or --rnng'
     sys.exit(1)
+
+if args.conditional:
+    # I don't know if it make sense to share the parameters for
+    # the embedder in both G and D: doing so would probably mess up
+    # optimization seriously.
+    e_g = model.CharRNNEmbedder(args.embedsize)
+    e_d = model.CharRNNEmbedder(args.embedsize)
+    cseq = TF.placeholder(TF.int32, shape=(None, None))
+    clen = TF.placeholder(TF.int32, shape=(None,))
+    _, cseq_fixed, clen_fixed = dataset.pick_words(batch_size, args)
+else:
+    e_g = e_d = cseq = clen = None
 
 if args.cnnd:
     d = model.Conv1DDiscriminator(
@@ -135,7 +154,7 @@ elif args.rnnd:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
     d = cls(frame_size=args.framesize,
             state_size=args.dstatesize,
-            length=args.amplitudes,
+            length=maxlen,
             approx=not args.rnntd_precise,
             num_layers=args.rnnd_layers,
             constraint=args.constraint,
@@ -145,7 +164,7 @@ elif args.multid:
     cls = model.RNNDiscriminator if not args.rnntd else model.RNNTimeDistributedDiscriminator
     drnn = cls(frame_size=args.framesize,
                state_size=args.dstatesize,
-               length=args.amplitudes,
+               length=maxlen,
                approx=not args.rnntd_precise,
                num_layers=args.rnnd_layers,
                metric=args.metric,
@@ -159,7 +178,7 @@ elif args.multid:
     d_local = model.LocalDiscriminatorWrapper(drnn, length=args.local,metric=args.metric)
     drnn2 = cls(
             frame_size=args.framesize//2,
-            length=args.amplitudes,
+            length=maxlen,
             approx=not args.rnntd_precise,
             num_layers=args.rnnd_layers,
             metric=args.metric,
@@ -171,16 +190,11 @@ else:
     print 'Specify either --cnnd --rnnd --multid'
     sys.exit(1)
 
-if args.conditional:
-    embed = model.CharRNNEmbedder(embed_size=args.embedsize)
-else:
-    gan = UnconditionalGAN(args, d, g, z)
+gan = GAN(args, maxlen, d, g, z, e_g=e_g, e_d=e_d, cseq=cseq, clen=clen)
 
 d_train_writer = TF.summary.FileWriter(log_train_d)
 d_valid_writer = TF.summary.FileWriter(log_valid_d)
 g_writer = TF.summary.FileWriter(log_train_g)
-
-dataloader, dataloader_val = dataset.dataloader(batch_size, args)
 
 i = 0
 epoch = 1
@@ -201,40 +215,70 @@ if __name__ == '__main__':
 
         for j in range(args.critic_iter):
             with Timer.new('load', print_=False):
-                epoch, batch_id, real_data = dataloader.next()
+                epoch, batch_id, real_data, _, cs, cl, _, csw, clw = dataloader.next()
+
+            feed_dict = {gan.x_real: real_data, gan.lambda_: l, K.learning_phase(): 1}
+            if args.conditional:
+                feed_dict.update({
+                    gan.char_seq: cs,
+                    gan.char_seq_len: cl,
+                    gan.char_seq_wrong: csw,
+                    gan.char_seq_wrong_len: clw,
+                    })
+
             with Timer.new('train_d', print_=False):
                 _, cmp, d_sum = s.run([gan.train_d, gan.comp, gan.d_summaries], 
-                                       feed_dict={gan.x_real: real_data, gan.lambda_: l,
-                                                  K.learning_phase():1})
+                                       feed_dict=feed_dict)
             print 'D', epoch, batch_id, cmp, Timer.get('load'), Timer.get('train_d')
             d_train_writer.add_summary(d_sum, i * args.critic_iter + j + 1)
         i += 1
 
-        _, _, real_data = dataloader_val.next()
-        _, _, real_data2 = dataloader_val.next()
-        cmp, cmp_ver, d_ver1, d_ver2, d_sum = s.run(
-                [gan.comp, gan.comp_verify, gan.d_verify_1, gan.d_verify_2, gan.d_valid_summaries],
-                feed_dict={gan.x_real: real_data,
-                           gan.x_real2: real_data2,
-                           gan.lambda_: l,
-                           K.learning_phase():0})
-        print 'D-valid', cmp, cmp_ver, d_ver1.mean(), d_ver2.mean()
-        d_valid_writer.add_summary(d_sum, i * args.critic_iter)
+        if not args.conditional:
+            _, _, real_data, _, _, _, _, _, _ = dataloader_val.next()
+            _, _, real_data2, _, _, _, _, _, _ = dataloader_val.next()
+            cmp, cmp_ver, d_ver1, d_ver2, d_sum = s.run(
+                    [gan.comp, gan.comp_verify, gan.d_verify_1, gan.d_verify_2, gan.d_valid_summaries],
+                    feed_dict={gan.x_real: real_data,
+                               gan.x_real2: real_data2,
+                               gan.lambda_: l,
+                               K.learning_phase():0})
+            print 'D-valid', cmp, cmp_ver, d_ver1.mean(), d_ver2.mean()
+            d_valid_writer.add_summary(d_sum, i * args.critic_iter)
 
+        feed_dict = {K.learning_phase(): 1}
+        if args.conditional:
+            _, cs, cl = dataset.pick_words(batch_size, args)
+            feed_dict.update({
+                gan.char_seq: cs,
+                gan.char_seq_len: cl,
+                })
         with Timer.new('train_g', print_=False):
-            _, loss, g_sum = s.run([gan.train_g, gan.loss_g, gan.g_summaries],
-                                    {K.learning_phase():1})
+            _, loss, g_sum = s.run([gan.train_g, gan.loss_g, gan.g_summaries], feed_dict=feed_dict)
         print 'G', i, loss, Timer.get('train_g')
         g_writer.add_summary(g_sum, i * args.critic_iter)
 
-        _ = s.run(gan.x_fake, {K.learning_phase():0})
+        feed_dict = {K.learning_phase(): 0}
+        if args.conditional:
+            _, cs, cl = dataset.pick_words(batch_size, args)
+            feed_dict.update({
+                gan.char_seq: cs,
+                gan.char_seq_len: cl,
+                })
+        _ = s.run(gan.x_fake, feed_dict=feed_dict)
         if NP.any(NP.isnan(_)):
             print 'NaN generated'
             sys.exit(0)
         if i % 50 == 0:
             print 'Saving...'
+            feed_dict = {gan.z: z_fixed, K.learning_phase(): 0}
+            if args.conditional:
+                _, cs, cl = dataset.pick_words(batch_size, args)
+                feed_dict.update({
+                    gan.char_seq: cs,
+                    gan.char_seq_len: cl,
+                    })
             x_gen, x_sum = s.run([gan.x, gan.audio_gen],
-                                 feed_dict={gan.z: z_fixed, K.learning_phase(): 0})
+                                 feed_dict=feed_dict)
             util.plot_waves(s, gan, x_gen, g_writer, i * args.critic_iter)
             g_writer.add_summary(x_sum, i * args.critic_iter)
             if i % 1000 == 0:
