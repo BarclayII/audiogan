@@ -30,6 +30,8 @@ class GAN(object):
             self.char_seq_len = char_seq_len
             self.char_seq_wrong = char_seq_wrong
             self.char_seq_wrong_len = char_seq_wrong_len
+            self.cseq = cseq
+            self.clen = clen
         else:
             c_g_fixed = c_g = c_d = c_wrong_d = None
 

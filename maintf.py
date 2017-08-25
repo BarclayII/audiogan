@@ -274,8 +274,8 @@ if __name__ == '__main__':
             if args.conditional:
                 _, cs, cl = dataset.pick_words(batch_size, args)
                 feed_dict.update({
-                    gan.char_seq: cs,
-                    gan.char_seq_len: cl,
+                    gan.cseq: cs,
+                    gan.clen: cl,
                     })
             x_gen, x_sum = s.run([gan.x, gan.audio_gen],
                                  feed_dict=feed_dict)
