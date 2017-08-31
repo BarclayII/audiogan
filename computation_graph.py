@@ -151,7 +151,7 @@ class DynamicGAN(GAN):
         else:
             raise ValueError('not an eligible loss function')
         self.ema = TF.train.ExponentialMovingAverage(decay=0.999)
-        self.reward = -self.loss_g
+        self.reward = TF.stop_gradient(-self.loss_g)
         self.baseline_update_op = self.ema.apply([self.reward])
         self.baseline = self.ema.average(self.reward)
         self.alpha = TF.placeholder(TF.float32, shape=())

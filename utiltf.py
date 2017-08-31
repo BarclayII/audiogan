@@ -50,11 +50,11 @@ def l2_loss(d_real, d_fake):
     return TF.square(d_fake - 1) + TF.square(d_real - 0)
 
 
-def cross_entropy(d_real, d_fake):
+def cross_entropy(d_real, d_fake, mask_real=1., mask_fake=1.):
     y_fake = TF.ones_like(d_fake)
     y_real = TF.zeros_like(d_real)
-    return TF.nn.sigmoid_cross_entropy_with_logits(labels=y_fake, logits=d_fake) + \
-           TF.nn.sigmoid_cross_entropy_with_logits(labels=y_real, logits=d_real)
+    return TF.losses.sigmoid_cross_entropy(y_fake, d_fake, weights=mask_fake) + \
+           TF.losses.sigmoid_cross_entropy(y_real, d_real, weights=mask_real)
 
 
 def wasserstein_g(d_fake):
@@ -104,3 +104,11 @@ def div_roundup(x, d):
 
 def roundup(x, d):
     return div_roundup(x, d) * d
+
+def length_mask(length, maxlen):
+    batch_size = TF.shape(length)[0]
+    batch_idx = TF.range(batch_size, dtype=TF.int32)
+    idx = TF.stack([batch_idx, length], axis=1)
+    updates = TF.ones((batch_size,))
+    stop_bit = TF.scatter_nd(idx, updates, (batch_size, maxlen))
+    return TF.cast(TF.equal(TF.cumsum(stop_bit, axis=1, exclusive=True), 0), TF.float32)

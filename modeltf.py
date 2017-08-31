@@ -770,7 +770,7 @@ class RNNDynamicGenerator(RNNGenerator):
         one_zero = TF.concat([TF.ones((batch_size, nframes - 1)), TF.zeros((batch_size, 1))], axis=1)
         logit = TF.cumsum(log_one_minus_p, axis=1, exclusive=True) + logp * one_zero
 
-        a = TF.multinomial(logit, 1)[:, 0]
+        a = TF.cast(TF.multinomial(logit, 1)[:, 0], TF.int32)
         gen_len = (a + 1) * frame_size
 
         return x, logit, a, gen_len
@@ -789,6 +789,7 @@ class RNNTimeDistributedDynamicDiscriminator(TimeDistributedCritic):
         self._state_size = state_size
         self._cell = cell
         self._num_layers = num_layers
+        self._check_wrong_condition = False
 
     def call(self, x, length, c=None, sum_=True, **kwargs):
         '''
@@ -798,9 +799,11 @@ class RNNTimeDistributedDynamicDiscriminator(TimeDistributedCritic):
         '''
         nframes = util.div_roundup(length, self._frame_size)
         batch_size = TF.shape(x)[0]
-        _x = TF.reshape(x, (batch_size, -1, self._frame_size))
+        maxlen = TF.shape(x)[1]
+        max_nframes = util.div_roundup(maxlen, self._frame_size)
+        _x = TF.reshape(x, (batch_size, max_nframes, self._frame_size))
         if c is not None:
-            c = TF.tile(TF.expand_dims(c, 1), (1, nframes, 1))
+            c = TF.tile(TF.expand_dims(c, 1), (1, max_nframes, 1))
             _x = TF.concat([_x, c], axis=2)
 
         lstms_f = []
@@ -810,17 +813,18 @@ class RNNTimeDistributedDynamicDiscriminator(TimeDistributedCritic):
             lstms_b.append(self._cell(self._state_size))
 
         h, _, _ = TF.contrib.rnn.stack_bidirectional_dynamic_rnn(
-                lstm_f,
-                lstm_b,
+                lstms_f,
+                lstms_b,
                 _x,
                 sequence_length=nframes,
+                dtype=TF.float32,
                 )
 
         w = TF.get_variable('w', shape=(2*self._state_size,), dtype=TF.float32)
         b = TF.get_variable('b', shape=(), dtype=TF.float32)
-        d = TF.matmul(TF.reshape(h, (batch_size * nframes, 2*self._state_size)),
+        d = TF.matmul(TF.reshape(h, (batch_size * max_nframes, 2*self._state_size)),
                       TF.reshape(w, (2 * self._state_size, 1))) + b
-        d = TF.reshape(d, (batch_size, nframes))
+        d = TF.reshape(d, (batch_size, max_nframes))
         
         return d, None
 
@@ -843,15 +847,18 @@ class RNNTimeDistributedDynamicDiscriminator(TimeDistributedCritic):
                 x_real, len_real, c=c if cond_input else None)
         d_fake, d_fake_pred = self.discriminate(
                 x_fake, len_fake, c=c if cond_input else None)
+
+        mask_real = util.length_mask(len_real, TF.shape(x_real)[1])
+        mask_fake = util.length_mask(len_fake, TF.shape(x_fake)[1])
         
         if hasattr(util, self.metric):
             loss_fn = getattr(util, self.metric)
         else:
             print('not an eligible loss function. Use Wasserstein or l2_loss')
-        loss = loss_fn(d_real, d_fake)
-        if cond_input:
+        loss = loss_fn(d_real, d_fake, mask_real, mask_fake)
+        if cond_input and self._check_wrong_condition:
             d_wrong, d_wrong_pred = self.discriminate(x_real, len_real, c=c_wrong)
-            loss += loss_fn(d_real, d_wrong)
+            loss += loss_fn(d_real, d_wrong, mask_real, mask_real)
 
         # For now second-order gradient is not supported for dynamic RNN in Tensorflow
         penalty = K.constant(0)

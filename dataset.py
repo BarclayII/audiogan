@@ -47,6 +47,8 @@ def word_to_seq(word, maxcharlen):
 def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args, frame_size=None):
     epoch = 0
     batch = 0
+    if frame_size is not None:
+        maxlen = util.roundup(maxlen, frame_size)
     while True:
         samples = []
         batch += 1
