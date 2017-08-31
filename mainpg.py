@@ -14,7 +14,7 @@ import os
 
 from timer import Timer
 import dataset
-from computation_graph import GAN
+from computation_graph import DynamicGAN
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=5, type=int)
@@ -75,7 +75,7 @@ cseq = TF.placeholder(TF.int32, shape=(None, None))
 clen = TF.placeholder(TF.int32, shape=(None,))
 _, cseq_fixed, clen_fixed = dataset.pick_words(batch_size, args)
 
-d = model.RNNDynamicDiscriminator(
+d = model.RNNTimeDistributedDynamicDiscriminator(
         frame_size=args.framesize,
         state_size=args.dstatesize,
         length=maxlen,
@@ -114,7 +114,7 @@ if __name__ == '__main__':
 
             feed_dict = {
                     gan.x_real: real_data,
-                    gan.length_real
+                    gan.length_real: real_len,
                     gan.lambda_: l,
                     gan.alpha: alpha,
                     K.learning_phase(): 1,

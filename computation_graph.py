@@ -4,7 +4,7 @@ import utiltf as util
 import modeltf as model
 
 class Graph(object):
-    def __init__(self):
+    def __init__(self, args):
         super(Graph, self).__init__()
 
         self.buf_ph = TF.placeholder(TF.uint8, shape=(None, None, None, 3))
@@ -79,7 +79,7 @@ class Graph(object):
 
 class GAN(Graph):
     def __init__(self, args, maxlen, d, g, z, e_g=None, e_d=None, cseq=None, clen=None):
-        super(GAN, self).__init__()
+        Graph.__init__(self, args)
 
         self.x_real = TF.placeholder(TF.float32, shape=(None, maxlen))
         self.x_real2 = TF.placeholder(TF.float32, shape=(None, maxlen))
@@ -110,9 +110,10 @@ class GAN(Graph):
         self._finalize(args, maxlen)
 
 
-class DynamicGAN(Graph):
+class DynamicGAN(GAN):
     def __init__(self, args, maxlen, d, g, z, e_g=None, e_d=None, cseq=None, clen=None):
-        super(GAN, self).__init__()
+        Graph.__init__(self, args)
+
         self.x_real = TF.placeholder(TF.float32, shape=(None, None))
         self.x_real2 = TF.placeholder(TF.float32, shape=(None, None))
         self.length_real = TF.placeholder(TF.int32, shape=(None,))
@@ -122,7 +123,7 @@ class DynamicGAN(Graph):
         self._set_conditional(args, e_g, e_d, cseq, clen)
 
         self.x_fake, self.logprob_fake, self.action_fake, self.length_fake = g.generate(
-                batch_size=args.batch_size,
+                batch_size=args.batchsize,
                 length=maxlen,
                 c=self.c_g,
                 )

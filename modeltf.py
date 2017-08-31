@@ -141,7 +141,7 @@ class RNNConvGenerator(Generator):
                 num_layers=self._num_layers)
 
         if z is None:
-            nframes = length // frame_size
+            nframes = util.div_roundup(length, frame_size)
             z = TF.random_normal((batch_size, nframes, noise_size))
         else:
             batch_size = TF.shape(z)[0]
@@ -211,7 +211,7 @@ class RNNGenerator(Generator):
                 num_layers=self._num_layers)
 
         if z is None:
-            nframes = length // frame_size
+            nframes = util.div_roundup(length, frame_size)
             z = TF.random_normal((batch_size, nframes, noise_size))
         else:
             batch_size = TF.shape(z)[0]
@@ -231,7 +231,6 @@ class RNNGenerator(Generator):
                 initial_state=initial_h,
                 )
         x = TF.concat(x, axis=1)
-        h = TF.stack(h, axis=1)
 
         return x, h
 
@@ -297,7 +296,7 @@ class Conv2DRNNGenerator(Generator):
         # and post_rnn_callback if you want to add some more fascinating
         # transformation.
         frame_size = noise_size
-        num_frames = length // frame_size
+        num_frames = util.div_roundup(length, frame_size)
 
         def post_rnn_callback(x):
             return TF.tanh(TF.reduce_mean(x, axis=-1, keep_dims=True))
@@ -523,7 +522,7 @@ class RNNDiscriminator(Discriminator):
         self._cell = cell
         self._length = length
         self._num_layers = num_layers
-        self._nframes = length // frame_size
+        self._nframes = util.div_roundup(length, frame_size)
 
     def _rnn(self, x, c=None, **kwargs):
         batch_size = TF.shape(x)[0]
@@ -599,7 +598,7 @@ class RNNTimeDistributedDiscriminator(TimeDistributedCritic):
         self._cell = cell
         self._length = length
         self._num_layers = num_layers
-        self._nframes = length // frame_size
+        self._nframes = util.div_roundup(length, frame_size)
 
     def call(self, x, c=None, sum_=True, **kwargs):
         batch_size = TF.shape(x)[0]
@@ -713,8 +712,48 @@ class LocalDiscriminatorWrapper(Discriminator):
         return self._d.grad_penalty(*args, **kwargs)
 
 # Policy Gradient models
+def tanh_except_last(x):
+    x_pre = x[..., :-1]
+    x_last = x[..., -1:]
+    return TF.concat([TF.tanh(x_pre), x_last], axis=-1)
 
 class RNNDynamicGenerator(RNNGenerator):
+    def _rnn(self, batch_size=None, length=None, z=None, c=None, initial_h=None):
+        frame_size = self._frame_size
+        noise_size = self._noise_size
+        state_size = self._state_size
+        cell = self._cell
+
+        lstm_f = cell(
+                state_size, num_proj=frame_size + 1, activation=tanh_except_last,
+                num_layers=self._num_layers)
+
+        if z is None:
+            nframes = util.div_roundup(length, frame_size)
+            z = TF.random_normal((batch_size, nframes, noise_size))
+        else:
+            batch_size = TF.shape(z)[0]
+            nframes = TF.shape(z)[1]
+
+        if c is not None:
+            c = TF.tile(TF.expand_dims(c, 1), (1, nframes, 1))
+            z = TF.concat([z, c], axis=2)
+
+        if initial_h is None:
+            initial_h = lstm_f.random_state(batch_size, TF.float32)
+
+        z_unstack = TF.unstack(TF.transpose(z, (1, 0, 2)))
+
+        x, h = TF.nn.static_rnn(
+                lstm_f, z_unstack, dtype=TF.float32,
+                initial_state=initial_h,
+                )
+        x = TF.stack(x, axis=1)
+        s = x[..., -1]
+        x = TF.reshape(x[..., :-1], (batch_size, -1))
+
+        return x, s, h
+
     def call(self, batch_size=None, length=None, z=None, c=None, initial_h=None):
         frame_size = self._frame_size
         state_size = self._state_size
@@ -724,10 +763,7 @@ class RNNDynamicGenerator(RNNGenerator):
             batch_size = TF.shape(z)[0]
             nframes = TF.shape(z)[1]
 
-        x, h = self._rnn(batch_size, length, z, c, initial_h)
-        w = TF.get_variable('w', shape=(state_size,), dtype=TF.float32)
-        s = TF.matmul(TF.reshape(h, (-1, state_size)), TF.expand_dims(w, 1))
-        s = TF.reshape(s, (batch_size, nframes))
+        x, s, h = self._rnn(batch_size, length, z, c, initial_h)
 
         logp = TF.log_sigmoid(s)
         log_one_minus_p = util.log_one_minus_sigmoid(s)
@@ -747,7 +783,7 @@ class RNNTimeDistributedDynamicDiscriminator(TimeDistributedCritic):
                  num_layers=1,
                  cell=TF.nn.rnn_cell.LSTMCell,
                  **kwargs):
-        super(RNNDiscriminator, self).__init__(**kwargs)
+        super(RNNTimeDistributedDynamicDiscriminator, self).__init__(**kwargs)
 
         self._frame_size = frame_size
         self._state_size = state_size

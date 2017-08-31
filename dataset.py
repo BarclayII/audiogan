@@ -100,10 +100,10 @@ def pick_words(batch_size, args):
 
     return picked_keys, cseq, clen
 
-def dataloader(batch_size, args):
+def dataloader(batch_size, args, frame_size=None):
     # Returns a generator which returns
     # (epoch, batch, audio, word, char_seq, char_seq_len, word_wrong, char_seq_wrong, char_seq_wrong_len)
     if not args.conditional:
         return unconditional_dataloader(batch_size, args)
     else:
-        return conditional_dataloader(batch_size, args)
+        return conditional_dataloader(batch_size, args, frame_size=frame_size)
