@@ -38,6 +38,7 @@ parser.add_argument('--dataset', type=str, default='dataset.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--constraint', type=str, default='gp', help='none, gp, wc or noise')
 parser.add_argument('--minwordlen', type=int, default=1)
+parser.add_argument('--maxlen', type=int, default=0)
 
 args = parser.parse_args()
 
@@ -59,7 +60,7 @@ args.conditional = True
 
 batch_size = args.batchsize
 
-maxlen, dataloader, dataloader_val = dataset.dataloader(batch_size, args, frame_size=args.framesize)
+maxlen, dataloader, dataloader_val = dataset.dataloader(batch_size, args, maxlen=args.maxlen, frame_size=args.framesize)
 log_train_d, log_valid_d, log_train_g = util.logdirs(args.logdir, modelnamesave)
 
 g = model.RNNDynamicGenerator(
