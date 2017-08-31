@@ -91,3 +91,16 @@ def logdirs(logdir, modelnamesave):
             raise IOError('%s exists and is not a directory' % subdir)
 
     return log_train_d, log_valid_d, log_train_g
+
+
+def log_one_minus_sigmoid(x):
+    y_neg = TF.log(1 - TF.sigmoid(x))
+    y_pos = -x - TF.log(1 + TF.exp(-x))
+    return TF.where(x > 0, y_pos, y_neg)
+
+
+def div_roundup(x, d):
+    return (x + d - 1) // d
+
+def roundup(x, d):
+    return div_roundup(x, d) * d

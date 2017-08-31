@@ -181,6 +181,7 @@ class RNNConvGenerator(Generator):
             x = TF.concat([x, x_next], -1)
         return x
 
+
 class RNNGenerator(Generator):
     # Sadly Keras' LSTM does not have output projection & feedback so I have
     # to use raw Tensorflow here.
@@ -199,7 +200,7 @@ class RNNGenerator(Generator):
         self._cell = cell
         self._num_layers = num_layers
 
-    def call(self, batch_size=None, length=None, z=None, c=None, initial_h=None):
+    def _rnn(self, batch_size=None, length=None, z=None, c=None, initial_h=None):
         frame_size = self._frame_size
         noise_size = self._noise_size
         state_size = self._state_size
@@ -225,14 +226,18 @@ class RNNGenerator(Generator):
 
         z_unstack = TF.unstack(TF.transpose(z, (1, 0, 2)))
 
-        x = TF.nn.static_rnn(
+        x, h = TF.nn.static_rnn(
                 lstm_f, z_unstack, dtype=TF.float32,
                 initial_state=initial_h,
-                )[0]
+                )
         x = TF.concat(x, axis=1)
+        h = TF.stack(h, axis=1)
 
+        return x, h
+
+    def call(self, batch_size=None, length=None, z=None, c=None, initial_h=None):
+        x, h = self._rnn(batch_size, length, z, c, initial_h)
         return x
-
 
 
 class Conv1DGenerator(Generator):
@@ -706,3 +711,113 @@ class LocalDiscriminatorWrapper(Discriminator):
 
     def grad_penalty(self, *args, **kwargs):
         return self._d.grad_penalty(*args, **kwargs)
+
+# Policy Gradient models
+
+class RNNDynamicGenerator(RNNGenerator):
+    def call(self, batch_size=None, length=None, z=None, c=None, initial_h=None):
+        frame_size = self._frame_size
+        state_size = self._state_size
+        if z is None:
+            nframes = util.div_roundup(length, frame_size)
+        else:
+            batch_size = TF.shape(z)[0]
+            nframes = TF.shape(z)[1]
+
+        x, h = self._rnn(batch_size, length, z, c, initial_h)
+        w = TF.get_variable('w', shape=(state_size,), dtype=TF.float32)
+        s = TF.matmul(TF.reshape(h, (-1, state_size)), TF.expand_dims(w, 1))
+        s = TF.reshape(s, (batch_size, nframes))
+
+        logp = TF.log_sigmoid(s)
+        log_one_minus_p = util.log_one_minus_sigmoid(s)
+        one_zero = TF.concat([TF.ones((batch_size, nframes - 1)), TF.zeros((batch_size, 1))], axis=1)
+        logit = TF.cumsum(log_one_minus_p, axis=1, exclusive=True) + logp * one_zero
+
+        a = TF.multinomial(logit, 1)[:, 0]
+        gen_len = (a + 1) * frame_size
+
+        return x, logit, a, gen_len
+
+
+class RNNTimeDistributedDynamicDiscriminator(TimeDistributedCritic):
+    def __init__(self,
+                 frame_size=200,
+                 state_size=100,
+                 num_layers=1,
+                 cell=TF.nn.rnn_cell.LSTMCell,
+                 **kwargs):
+        super(RNNDiscriminator, self).__init__(**kwargs)
+
+        self._frame_size = frame_size
+        self._state_size = state_size
+        self._cell = cell
+        self._num_layers = num_layers
+
+    def call(self, x, length, c=None, sum_=True, **kwargs):
+        '''
+        x: (batch_size, max_amplitude_samples)
+        length: (batch_size,), # of effective samples
+                the amplitudes after this number are discarded.
+        '''
+        nframes = util.div_roundup(length, self._frame_size)
+        batch_size = TF.shape(x)[0]
+        _x = TF.reshape(x, (batch_size, -1, self._frame_size))
+        if c is not None:
+            c = TF.tile(TF.expand_dims(c, 1), (1, nframes, 1))
+            _x = TF.concat([_x, c], axis=2)
+
+        lstms_f = []
+        lstms_b = []
+        for _ in range(self._num_layers):
+            lstms_f.append(self._cell(self._state_size))
+            lstms_b.append(self._cell(self._state_size))
+
+        h, _, _ = TF.contrib.rnn.stack_bidirectional_dynamic_rnn(
+                lstm_f,
+                lstm_b,
+                _x,
+                sequence_length=nframes,
+                )
+
+        w = TF.get_variable('w', shape=(2*self._state_size,), dtype=TF.float32)
+        b = TF.get_variable('b', shape=(), dtype=TF.float32)
+        d = TF.matmul(TF.reshape(h, (batch_size * nframes, 2*self._state_size)),
+                      TF.reshape(w, (2 * self._state_size, 1))) + b
+        d = TF.reshape(d, (batch_size, nframes))
+        
+        return d, None
+
+    def compare(self,
+                x_real,
+                x_fake,
+                len_real,
+                len_fake,
+                c=None,
+                c_wrong=None,
+                **kwargs):
+        # mode: 'unconditional', 'conditional_input', 'aux_classifier'
+        cond_input = self.mode == 'conditional_input'
+
+        if self.noise:
+            x_real = x_real + TF.random_normal(TF.shape(x_real)) * self.noise_scale
+            x_fake = x_fake + TF.random_normal(TF.shape(x_fake)) * self.noise_scale
+
+        d_real, d_real_pred = self.discriminate(
+                x_real, len_real, c=c if cond_input else None)
+        d_fake, d_fake_pred = self.discriminate(
+                x_fake, len_fake, c=c if cond_input else None)
+        
+        if hasattr(util, self.metric):
+            loss_fn = getattr(util, self.metric)
+        else:
+            print('not an eligible loss function. Use Wasserstein or l2_loss')
+        loss = loss_fn(d_real, d_fake)
+        if cond_input:
+            d_wrong, d_wrong_pred = self.discriminate(x_real, len_real, c=c_wrong)
+            loss += loss_fn(d_real, d_wrong)
+
+        # For now second-order gradient is not supported for dynamic RNN in Tensorflow
+        penalty = K.constant(0)
+
+        return K.mean(loss), d_real, d_fake, penalty, d_real_pred, d_fake_pred

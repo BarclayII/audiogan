@@ -44,7 +44,7 @@ def word_to_seq(word, maxcharlen):
     char_seq[:len(word)] = [ord(c) for c in word]
     return char_seq
 
-def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args):
+def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args, frame_size=None):
     epoch = 0
     batch = 0
     while True:
@@ -57,13 +57,15 @@ def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args)
             sample_in = dataset[key][sample_idx]
             sample_len = sample_in.shape[0]
 
+            length = sample_len if frame_size is None else util.roundup(sample_len, frame_size)
+
             sample_out = NP.zeros(maxlen)
             sample_out[:sample_len] = sample_in[:sample_len]
             sample_char_seq = word_to_seq(key, maxcharlen)
             sample_char_seq_wrong = word_to_seq(key_wrong, maxcharlen)
 
             samples.append((
-                sample_out, key, sample_char_seq, len(key),
+                sample_out, length, key, sample_char_seq, len(key),
                 key_wrong, sample_char_seq_wrong, len(key_wrong)
                 ))
 
@@ -74,7 +76,7 @@ def _valid_keys(keys, args):
     keys = [k for k in keys if len(k) >= args.minwordlen]
     return keys
 
-def conditional_dataloader(batch_size, args):
+def conditional_dataloader(batch_size, args, frame_size=None):
     dataset = h5py.File(args.dataset)
     keys = _valid_keys(dataset.keys(), args)
     keys = list(RNG.permutation(keys))
@@ -82,8 +84,8 @@ def conditional_dataloader(batch_size, args):
     maxlen = max(dataset[k].shape[1] for k in keys)
     maxcharlen = max(len(k) for k in keys)
 
-    dataloader = _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys[:n_train_keys], args)
-    dataloader_val = _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys[n_train_keys:], args)
+    dataloader = _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys[:n_train_keys], args, frame_size)
+    dataloader_val = _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys[n_train_keys:], args, frame_size)
 
     return maxlen, dataloader, dataloader_val
 

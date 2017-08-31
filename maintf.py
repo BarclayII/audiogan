@@ -257,7 +257,7 @@ if __name__ == '__main__':
         print 'G', i, loss, Timer.get('train_g')
         g_writer.add_summary(g_sum, i * args.critic_iter)
 
-        feed_dict = {K.learning_phase(): 0}
+        feed_dict = {K.learning_phase(): 1}
         if args.conditional:
             _, cs, cl = dataset.pick_words(batch_size, args)
             feed_dict.update({
