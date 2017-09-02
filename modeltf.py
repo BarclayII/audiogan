@@ -15,11 +15,25 @@ session = None
 
 def start():
     global session
-    session = TF.Session()
+    session = TF.Session(config=TF.ConfigProto(allow_soft_placement=True))
     return session
 
 def run(*args, **kwargs):
     global session
+    '''
+    run_metadata = TF.RunMetadata()
+    try:
+        return session.run(*args,
+                           options=TF.RunOptions(trace_level=TF.RunOptions.FULL_TRACE),
+                           run_metadata=run_metadata,
+                           **kwargs)
+    except:
+        TF.contrib.tfprof.model_analyzer.print_model_analysis(
+                TF.get_default_graph(),
+                run_meta=run_metadata,
+                tfprof_options=TF.contrib.tfprof.model_analyzer.PRINT_ALL_TIMING_MEMORY)
+        raise
+    '''
     return session.run(*args, **kwargs)
 
 class Model(object):

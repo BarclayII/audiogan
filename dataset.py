@@ -2,6 +2,7 @@
 import h5py
 import numpy.random as RNG
 import numpy as NP
+import utiltf as util
 
 def _unconditional_dataloader(batch_size, data, lower, upper, args):
     epoch = 1
@@ -52,12 +53,15 @@ def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args,
     while True:
         samples = []
         batch += 1
-        for i in range(batch_size):
+        i = 0
+        while i < batch_size:
             key = RNG.choice(keys)
             key_wrong = RNG.choice(keys)
             sample_idx = RNG.choice(dataset[key].shape[0])
             sample_in = dataset[key][sample_idx]
-            sample_len = sample_in.shape[0]
+            sample_len = sum(1 - NP.cumprod((sample_in == 0)[::-1]))
+            if sample_len > maxlen:
+                continue
 
             length = sample_len if frame_size is None else util.roundup(sample_len, frame_size)
 
@@ -70,6 +74,7 @@ def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args,
                 sample_out, length, key, sample_char_seq, len(key),
                 key_wrong, sample_char_seq_wrong, len(key_wrong)
                 ))
+            i += 1
 
         yield [epoch, batch] + [NP.array(a) for a in zip(*samples)]
 

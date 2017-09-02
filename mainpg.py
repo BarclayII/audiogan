@@ -99,7 +99,7 @@ if __name__ == '__main__':
     s = model.start()
     d_train_writer.add_graph(s.graph)
     g_writer.add_graph(s.graph)
-    s.run(TF.global_variables_initializer())
+    model.run(TF.global_variables_initializer())
 
     if modelnameload:
         if len(modelnameload) > 0:
@@ -125,7 +125,7 @@ if __name__ == '__main__':
                     gan.char_seq_wrong_len: clw,
                     }
             with Timer.new('train_d', print_=False):
-                _, cmp, d_sum = s.run([gan.train_d, gan.comp, gan.d_summaries], 
+                _, cmp, d_sum = model.run([gan.train_d, gan.comp, gan.d_summaries], 
                                        feed_dict=feed_dict)
             print 'D', epoch, batch_id, cmp, Timer.get('load'), Timer.get('train_d')
             d_train_writer.add_summary(d_sum, i * args.critic_iter + j + 1)
@@ -138,7 +138,7 @@ if __name__ == '__main__':
                 gan.char_seq_len: cl,
                 }
         with Timer.new('train_g', print_=False):
-            _, xf, loss, g_sum = s.run([gan.train_g, gan.x_fake, gan.loss_g, gan.g_summaries], feed_dict=feed_dict)
+            _, xf, loss, g_sum = model.run([gan.train_g, gan.x_fake, gan.loss_g, gan.g_summaries], feed_dict=feed_dict)
         print 'G', i, loss, Timer.get('train_g')
         g_writer.add_summary(g_sum, i * args.critic_iter)
         if NP.any(NP.isnan(xf)):
@@ -154,7 +154,7 @@ if __name__ == '__main__':
                     gan.cseq: cs,
                     gan.clen: cl,
                     }
-            x_gen, x_sum = s.run([gan.x, gan.audio_gen],
+            x_gen, x_sum = model.run([gan.x, gan.audio_gen],
                                  feed_dict=feed_dict)
             util.plot_waves(s, gan, x_gen, g_writer, i * args.critic_iter)
             g_writer.add_summary(x_sum, i * args.critic_iter)
