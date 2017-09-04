@@ -15,6 +15,7 @@ import os
 
 from timer import Timer
 import dataset
+import utiltf as util
 
 def tovar(*arrs):
     tensors = [T.Tensor(a).cuda() for a in arrs]
