@@ -340,7 +340,7 @@ baseline = 0.
 param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
-opt_g = T.optim.SGD(param_g, lr=1e-5)
+opt_g = T.optim.RMSprop(param_g, lr=1e-5)
 opt_d = T.optim.SGD(param_d, lr=1e-5)
 if __name__ == '__main__':
     if modelnameload:
@@ -380,6 +380,7 @@ if __name__ == '__main__':
                 target = tovar(T.zeros(*(cls.size())))
                 weight = length_mask(cls.size(), div_roundup(fake_len.data, args.framesize))
                 loss += F.binary_cross_entropy_with_logits(cls, target, weight=weight, size_average=False)
+                loss /= args.batchsize
 
                 opt_d.zero_grad()
                 loss.backward()
@@ -416,4 +417,4 @@ if __name__ == '__main__':
             T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
             opt_g.step()
 
-        print 'G', i, loss, Timer.get('train_g')
+        print 'G', i, tonumpy(loss), Timer.get('train_g')
