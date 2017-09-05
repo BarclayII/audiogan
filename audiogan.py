@@ -356,7 +356,7 @@ if __name__ == '__main__':
         for j in range(args.critic_iter):
             with Timer.new('load', print_=False):
                 epoch, batch_id, real_data, real_len, _, cs, cl, _, csw, clw = dataloader.next()
-                _cs2, cl2 = dataset.pick_words(batch_size, args)
+                _, cs2, cl2 = dataset.pick_words(batch_size, args)
 
             with Timer.new('train_d', print_=False):
                 real_data = tovar(real_data + RNG.randn(*real_data.shape))
