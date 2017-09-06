@@ -20,6 +20,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as PL
 
+from PIL import Image
+import librosa
+
 def tovar(*arrs):
     tensors = [(T.Tensor(a.astype('float32')) if isinstance(a, NP.ndarray) else a).cuda() for a in arrs]
     vars_ = [T.autograd.Variable(t) for t in tensors]
