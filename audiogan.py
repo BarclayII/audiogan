@@ -15,7 +15,10 @@ import os
 
 from timer import Timer
 import dataset
-import utiltf as util
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as PL
 
 def tovar(*arrs):
     tensors = [(T.Tensor(a.astype('float32')) if isinstance(a, NP.ndarray) else a).cuda() for a in arrs]
@@ -278,7 +281,7 @@ parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
 parser.add_argument('--just_run', type=str, default='')
-parser.add_argument('--loaditerations', type=int)
+parser.add_argument('--loaditerations', type=int, default=0)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='dataset.h5')
 parser.add_argument('--embedsize', type=int, default=100)
@@ -305,7 +308,20 @@ print args
 batch_size = args.batchsize
 
 maxlen, dataloader, dataloader_val = dataset.dataloader(batch_size, args, maxlen=args.maxlen, frame_size=args.framesize)
-log_train_d, _, log_train_g = util.logdirs(args.logdir, modelnamesave)
+
+def logdirs(logdir, modelnamesave):
+    logdir = (
+            logdir + '/%s-%s' % 
+            (modelnamesave, datetime.datetime.strftime(
+                datetime.datetime.now(), '%Y%m%d%H%M%S')
+                )
+            )
+    if not os.path.exists(logdir):
+        os.mkdir(logdir)
+    elif not os.path.isdir(logdir):
+        raise IOError('%s is not a directory' % logdir)
+    return logdir
+log_train_d = logdirs(args.logdir, modelnamesave)
 
 g = Generator(
         frame_size=args.framesize,
@@ -319,7 +335,10 @@ z_fixed = tovar(RNG.randn(batch_size, nframes, args.noisesize))
 
 e_g = Embedder(args.embedsize).cuda()
 e_d = Embedder(args.embedsize).cuda()
-_, cseq_fixed, clen_fixed = dataset.pick_words(batch_size, args)
+cseq, cseq_fixed, clen_fixed = dataset.pick_words(batch_size, args)
+cseq_fixed, clen_fixed = tovar(cseq_fixed, clen_fixed)
+cseq_fixed = cseq_fixed.long()
+clen_fixed = clen_fixed.long()
 
 d = Discriminator(
         frame_size=args.framesize,
@@ -329,9 +348,8 @@ d = Discriminator(
         ).cuda()
 
 d_train_writer = TF.summary.FileWriter(log_train_d)
-g_writer = TF.summary.FileWriter(log_train_g)
 
-i = 0
+gen_iter = 0
 epoch = 1
 l = 10
 alpha = 0.1
@@ -345,8 +363,10 @@ opt_d = T.optim.SGD(param_d, lr=1e-5)
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
-            T.load(d, '%s-dis-%05d' % (modelnameload, args.loaditerations))
-            T.load(g, '%s-gen-%05d' % (modelnameload, args.loaditerations))
+            d = T.load('%s-dis-%05d' % (modelnameload, args.loaditerations))
+            g = T.load('%s-gen-%05d' % (modelnameload, args.loaditerations))
+            e_g = T.load('%s-eg-%05d' % (modelnameload, args.loaditerations))
+            e_d = T.load('%s-ed-%05d' % (modelnameload, args.loaditerations))
 
     while True:
         _epoch = epoch
@@ -365,31 +385,45 @@ if __name__ == '__main__':
                 cl = tovar(cl).long()
 
                 embed_d = e_d(cs, cl)
-                cls = d(real_data, real_len, embed_d)
-                target = tovar(T.ones(*(cls.size())))
-                weight = length_mask(cls.size(), div_roundup(real_len.data, args.framesize))
-                loss = F.binary_cross_entropy_with_logits(cls, target, weight=weight, size_average=False)
+                cls_d = d(real_data, real_len, embed_d)
+                target = tovar(T.ones(*(cls_d.size())))
+                weight = length_mask(cls_d.size(), div_roundup(real_len.data, args.framesize))
+                loss_d = F.binary_cross_entropy_with_logits(cls_d, target, weight=weight, size_average=False) / batch_size
 
                 cs2 = tovar(cs2).long()
                 cl2 = tovar(cl2).long()
                 embed_g = e_g(cs2, cl2)
                 embed_d = e_d(cs2, cl2)
-                fake_data, _, _, fake_len = g(batch_size=args.batchsize, length=maxlen, c=embed_g)
-                fake_data += tovar(T.randn(*fake_data.size()))
-                cls = d(fake_data, fake_len, embed_d)
-                target = tovar(T.zeros(*(cls.size())))
-                weight = length_mask(cls.size(), div_roundup(fake_len.data, args.framesize))
-                loss += F.binary_cross_entropy_with_logits(cls, target, weight=weight, size_average=False)
-                loss /= args.batchsize
+                fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
+                cls_g = d(fake_data + tovar(T.randn(*fake_data.size())), fake_len, embed_d)
+                target = tovar(T.zeros(*(cls_g.size())))
+                weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
+                loss_g = F.binary_cross_entropy_with_logits(cls_g, target, weight=weight, size_average=False) / batch_size
+                loss = loss_d + loss_g
 
                 opt_d.zero_grad()
                 loss.backward()
                 check_grad(param_d)
                 opt_d.step()
 
-            print 'D', epoch, batch_id, tonumpy(loss), Timer.get('load'), Timer.get('train_d')
+            loss_d, loss_g, loss, cls_d, cls_g = tonumpy(loss_d, loss_g, loss, cls_d, cls_g)
+            d_train_writer.add_summary(
+                    TF.Summary(
+                        value=[
+                            TF.Summary.Value(tag='loss_d', simple_value=loss_d),
+                            TF.Summary.Value(tag='loss_g', simple_value=loss_g),
+                            TF.Summary.Value(tag='loss', simple_value=loss),
+                            TF.Summary.Value(tag='cls_d/mean', simple_value=cls_d.mean()),
+                            TF.Summary.Value(tag='cls_d/std', simple_value=cls_d.std()),
+                            TF.Summary.Value(tag='cls_g/mean', simple_value=cls_g.mean()),
+                            TF.Summary.Value(tag='cls_g/std', simple_value=cls_g.std()),
+                            ]
+                        )
+                    )
 
-        i += 1
+            print 'D', epoch, batch_id, loss, Timer.get('load'), Timer.get('train_d')
+
+        gen_iter += 1
         for p in param_g:
             p.requires_grad = True
 
@@ -399,12 +433,12 @@ if __name__ == '__main__':
             cl = tovar(cl).long()
             embed_g = e_g(cs, cl)
             embed_d = e_d(cs, cl)
-            fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=args.batchsize, length=maxlen, c=embed_g)
+            fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
             fake_data += tovar(T.randn(*fake_data.size()))
-            cls = d(fake_data, fake_len, embed_d)
-            target = tovar(T.ones(*(cls.size())))
-            weight = length_mask(cls.size(), div_roundup(fake_len.data, args.framesize))
-            loss = binary_cross_entropy_with_logits_per_sample(cls, target, weight=weight)
+            cls_g = d(fake_data, fake_len, embed_d)
+            target = tovar(T.ones(*(cls_g.size())))
+            weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
+            loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight)
 
             reward = -loss.data
             baseline = baseline * 0.999 + reward.mean() * 0.001
@@ -417,4 +451,45 @@ if __name__ == '__main__':
             T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
             opt_g.step()
 
-        print 'G', i, tonumpy(loss), Timer.get('train_g')
+        if gen_iter % 50 == 0:
+            embed_g = e_g(cseq_fixed, clen_fixed)
+            fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
+            fake_data, fake_len = tonumpy(fake_data, fake_len)
+
+            for batch in range(batch_size):
+                fake_sample = fake_data[batch, :fake_len[batch]]
+                PL.plot(fake_sample)
+                PL.savefig('temp.png')
+                PL.close()
+                with open('temp.png') as f:
+                    imgbuf = f.read()
+                img = Image.open('temp.png')
+                summary = TF.Summary.Image(
+                        height=img.height,
+                        width=img.width,
+                        colorspace=3,
+                        encoded_image_string=imgbuf
+                        )
+                summary = TF.Summary.Value(tag='plot/%s' % cseq[batch], image=summary)
+                d_train_writer.add_summary(TF.Summary(value=[summary]), gen_iter)
+
+            if gen_iter % 500 == 0:
+                for batch in range(batch_size):
+                    librosa.output.write_wav('temp.wav', fake_sample, sr=8000)
+                    with open('temp.wav') as f:
+                        wavbuf = f.read()
+                    summary = TF.Summary.Audio(
+                            sample_rate=8000,
+                            num_channels=1,
+                            length_frames=fake_len[batch],
+                            encoded_audio_string=wavbuf,
+                            content_type='audio/wav'
+                            )
+                    summary = TF.Summary.Value(tag='audio/%s' % cseq[batch], audio=summary)
+                    d_train_writer.add_summary(TF.Summary(value=[summary]), gen_iter)
+                T.save(d, '%s-dis-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+
+        print 'G', gen_iter, tonumpy(loss), Timer.get('train_g')
