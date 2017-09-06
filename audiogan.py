@@ -421,7 +421,8 @@ if __name__ == '__main__':
                             TF.Summary.Value(tag='cls_g/mean', simple_value=cls_g.mean()),
                             TF.Summary.Value(tag='cls_g/std', simple_value=cls_g.std()),
                             ]
-                        )
+                        ),
+                    gen_iter * args.critic_iter + j
                     )
 
             print 'D', epoch, batch_id, loss, Timer.get('load'), Timer.get('train_d')
@@ -454,7 +455,7 @@ if __name__ == '__main__':
             T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
             opt_g.step()
 
-        if gen_iter % 50 == 0:
+        if gen_iter % 10 == 0:
             embed_g = e_g(cseq_fixed, clen_fixed)
             fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
             fake_data, fake_len = tonumpy(fake_data, fake_len)
@@ -476,7 +477,7 @@ if __name__ == '__main__':
                 summary = TF.Summary.Value(tag='plot/%s' % cseq[batch], image=summary)
                 d_train_writer.add_summary(TF.Summary(value=[summary]), gen_iter)
 
-            if gen_iter % 500 == 0:
+            if gen_iter % 50 == 0:
                 for batch in range(batch_size):
                     librosa.output.write_wav('temp.wav', fake_sample, sr=8000)
                     with open('temp.wav') as f:
