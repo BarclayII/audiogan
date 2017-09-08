@@ -520,6 +520,7 @@ if __name__ == '__main__':
 
             if gen_iter % 500 == 0:
                 for batch in range(batch_size):
+                    fake_sample = fake_data[batch, :fake_len[batch]]
                     librosa.output.write_wav('temp.wav', fake_sample, sr=8000)
                     with open('temp.wav') as f:
                         wavbuf = f.read()
