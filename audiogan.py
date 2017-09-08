@@ -362,7 +362,7 @@ param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
 opt_g = T.optim.RMSprop(param_g, lr=1e-5)
-opt_d = T.optim.SGD(param_d, lr=1e-5)
+opt_d = T.optim.RMSprop(param_d, lr=1e-5)
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
@@ -479,6 +479,7 @@ if __name__ == '__main__':
 
             if gen_iter % 50 == 0:
                 for batch in range(batch_size):
+                    fake_sample = fake_data[batch, :fake_len[batch]]
                     librosa.output.write_wav('temp.wav', fake_sample, sr=8000)
                     with open('temp.wav') as f:
                         wavbuf = f.read()
