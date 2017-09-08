@@ -2,7 +2,6 @@
 import h5py
 import numpy.random as RNG
 import numpy as NP
-import utiltf as util
 
 def _unconditional_dataloader(batch_size, data, lower, upper, args):
     epoch = 1
