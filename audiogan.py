@@ -4,6 +4,7 @@ import torch.nn as NN
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
+from torch.nn import Conv1d
 import numpy as NP
 import numpy.random as RNG
 import tensorflow as TF     # for Tensorboard
@@ -17,6 +18,7 @@ from timer import Timer
 import dataset
 
 import matplotlib
+from librosa import feature
 matplotlib.use('Agg')
 import matplotlib.pyplot as PL
 
@@ -138,6 +140,15 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].view(batch_size, output_size)
 
+def calc_dists(hidden_states):
+    for h in hidden_states:
+        m = h.mean(2)
+        s = h.std(2)
+        means_d.append(m.mean(0))
+        means_d.append(s.mean(0))
+        stds_d.append(m.std(0))
+        stds_d.append(s.std(0))
+    return means_d + stds_d
 
 class Generator(NN.Module):
     def __init__(self,
@@ -222,13 +233,28 @@ class Discriminator(NN.Module):
                  frame_size=200,
                  state_size=1024,
                  embed_size=200,
-                 num_layers=1):
+                 num_layers=1,
+                 cnn_struct = [[9, 5, 100],[9, 5, 100],[3, 2, 100],[3,2,100]]):
         NN.Module.__init__(self)
         self._frame_size = frame_size
         self._state_size = state_size
         self._embed_size = embed_size
         self._num_layers = num_layers
+        self._cnn_struct = cnn_struct
+        
+        self.cnn = []
+        infilters = 1
+        for layer in cnn_struct:
+            
+            kernel, stride, outfilters = layer[0],layer[1],layer[2]
+            
+            self.cnn.append(Conv1d(in_channels = infilters, out_channels = outfilters, 
+                                   kernel_size = kernel, stride = stride, padding = (kernel - 1) //2).cuda())
 
+            infilters = outfilters
+            frame_size /= stride
+        frame_size *= outfilters
+        self.frame_size = frame_size
         self.rnn = NN.LSTM(
                 frame_size + embed_size,
                 state_size // 2,
@@ -249,16 +275,23 @@ class Discriminator(NN.Module):
         batch_size, maxlen = x.size()
         max_nframes = div_roundup(maxlen, frame_size)
         nframes = div_roundup(length, frame_size)
-
-        x = x.view(batch_size, max_nframes, frame_size)
+        x_andy = x.view(batch_size, max_nframes, frame_size)
         c = c.unsqueeze(1).expand(batch_size, max_nframes, embed_size)
-        x = T.cat([x, c], 2).permute(1, 0, 2)
+        x_andy = T.cat([x_andy, c], 2).permute(1, 0, 2)
+        xold = x
 
         initial_state = (
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
                 )
-
+        cnn_outputs = []
+        cnn_output = xold.unsqueeze(1)
+        for cnn_layer in self.cnn:
+            cnn_output = F.leaky_relu(cnn_layer(cnn_output))
+            cnn_outputs.append(cnn_output)
+        x = cnn_output
+        x = x.view(32,max_nframes,frame_size)
+        x = T.cat([x, c], 2).permute(1, 0, 2)
         lstm_out, (lstm_h, lstm_c) = dynamic_rnn(self.rnn, x, nframes, initial_state)
         lstm_out = lstm_out.permute(1, 0, 2)
         max_nframes = lstm_out.size()[1]
@@ -266,7 +299,7 @@ class Discriminator(NN.Module):
         classifier_in = lstm_out.view(batch_size * max_nframes, state_size)
         classifier_out = self.classifier(classifier_in).view(batch_size, max_nframes)
 
-        return classifier_out
+        return classifier_out, cnn_outputs
 
 
 parser = argparse.ArgumentParser()
@@ -357,12 +390,11 @@ epoch = 1
 l = 10
 alpha = 0.1
 baseline = 0.
-
 param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
 opt_g = T.optim.RMSprop(param_g, lr=1e-5)
-opt_d = T.optim.SGD(param_d, lr=1e-5)
+opt_d = T.optim.RMSprop(param_d, lr=1e-5)
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
@@ -388,7 +420,10 @@ if __name__ == '__main__':
                 cl = tovar(cl).long()
 
                 embed_d = e_d(cs, cl)
-                cls_d = d(real_data, real_len, embed_d)
+                cls_d, hidden_states_d = d(real_data, real_len, embed_d)
+                means_d = []
+                stds_d = []
+                dists_d = calc_dists(hidden_states_d)
                 target = tovar(T.ones(*(cls_d.size())))
                 weight = length_mask(cls_d.size(), div_roundup(real_len.data, args.framesize))
                 loss_d = F.binary_cross_entropy_with_logits(cls_d, target, weight=weight, size_average=False) / batch_size
@@ -398,10 +433,13 @@ if __name__ == '__main__':
                 embed_g = e_g(cs2, cl2)
                 embed_d = e_d(cs2, cl2)
                 fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
-                cls_g = d(fake_data + tovar(T.randn(*fake_data.size())), fake_len, embed_d)
+                cls_g, _ = d(fake_data + tovar(T.randn(*fake_data.size())), fake_len, embed_d)
+
                 target = tovar(T.zeros(*(cls_g.size())))
                 weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
+                #feature_penalty = [T.pow(r - f,2).mean() for r, f in zip(dists_d, dists_g)]
                 loss_g = F.binary_cross_entropy_with_logits(cls_g, target, weight=weight, size_average=False) / batch_size
+                        
                 loss = loss_d + loss_g
 
                 opt_d.zero_grad()
@@ -421,8 +459,7 @@ if __name__ == '__main__':
                             TF.Summary.Value(tag='cls_g/mean', simple_value=cls_g.mean()),
                             TF.Summary.Value(tag='cls_g/std', simple_value=cls_g.std()),
                             ]
-                        ),
-                    gen_iter * args.critic_iter + j
+                        )
                     )
 
             print 'D', epoch, batch_id, loss, Timer.get('load'), Timer.get('train_d')
@@ -439,7 +476,11 @@ if __name__ == '__main__':
             embed_d = e_d(cs, cl)
             fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
             fake_data += tovar(T.randn(*fake_data.size()))
-            cls_g = d(fake_data, fake_len, embed_d)
+            cls_g, hidden_states_g = d(fake_data, fake_len, embed_d)
+            dists_g = calc_dists(hidden_states_g)
+            feature_penalty = 0
+            for r, f in zip(dists_d, dists_g):
+                feature_penalty += T.pow(r-f,2).mean()/batch_size
             target = tovar(T.ones(*(cls_g.size())))
             weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
             loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight)
@@ -447,7 +488,7 @@ if __name__ == '__main__':
             reward = -loss.data
             baseline = baseline * 0.999 + reward.mean() * 0.001
             reward = (reward - baseline).unsqueeze(1) * weight.data
-            loss = loss.mean()
+            loss = loss.mean() + feature_penalty
             for i, fake_stop in enumerate(fake_stop_list):
                 fake_stop.reinforce(reward[:, i:i+1])
             opt_g.zero_grad()
@@ -455,7 +496,7 @@ if __name__ == '__main__':
             T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
             opt_g.step()
 
-        if gen_iter % 10 == 0:
+        if gen_iter % 50 == 0:
             embed_g = e_g(cseq_fixed, clen_fixed)
             fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
             fake_data, fake_len = tonumpy(fake_data, fake_len)
@@ -477,7 +518,7 @@ if __name__ == '__main__':
                 summary = TF.Summary.Value(tag='plot/%s' % cseq[batch], image=summary)
                 d_train_writer.add_summary(TF.Summary(value=[summary]), gen_iter)
 
-            if gen_iter % 50 == 0:
+            if gen_iter % 500 == 0:
                 for batch in range(batch_size):
                     librosa.output.write_wav('temp.wav', fake_sample, sr=8000)
                     with open('temp.wav') as f:
