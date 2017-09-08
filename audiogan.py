@@ -480,7 +480,7 @@ if __name__ == '__main__':
             dists_g = calc_dists(hidden_states_g)
             feature_penalty = 0
             for r, f in zip(dists_d, dists_g):
-                feature_penalty += T.pow(r-f,2).mean()/batch_size
+                feature_penalty += T.pow(r-f,2).data.mean()/batch_size
             target = tovar(T.ones(*(cls_g.size())))
             weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
             loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight)
