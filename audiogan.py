@@ -1,4 +1,5 @@
 
+
 import torch as T
 import torch.nn as NN
 import torch.nn.functional as F
@@ -144,10 +145,10 @@ def calc_dists(hidden_states):
     for h in hidden_states:
         m = h.mean(2)
         s = h.std(2)
-        means_d.append(m.mean(0))
-        means_d.append(s.mean(0))
-        stds_d.append(m.std(0))
-        stds_d.append(s.std(0))
+        means_d.append((m.mean(0),m.std(0)))
+        means_d.append((s.mean(0),s.std(0)))
+        stds_d.append((m.std(0),m.std(0)))
+        stds_d.append((s.std(0),s.std(0)))
     return means_d + stds_d
 
 class Generator(NN.Module):
@@ -330,7 +331,7 @@ args.conditional = True
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-
+lambda_fp = 1
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
     modelnameload = None
@@ -487,8 +488,10 @@ if __name__ == '__main__':
             
             dists_g = calc_dists(hidden_states_g)
             feature_penalty = 0
+            #dists are (object, std) pairs.
+            #penalizing z-scores of gen from real distribution
             for r, f in zip(dists_d, dists_g):
-                feature_penalty += T.pow(r-f,2).mean()/batch_size
+                feature_penalty += T.pow((r[0]-f[0])/r[1],2).mean()/batch_size
             target = tovar(T.ones(*(cls_g.size())))
             weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
             loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight)
@@ -496,6 +499,14 @@ if __name__ == '__main__':
             reward = -loss.data
             baseline = baseline * 0.999 + reward.mean() * 0.001
             reward = (reward - baseline).unsqueeze(1) * weight.data
+            fp_raw = tonumpy(feature_penalty)
+            if fp_raw  * lambda_fp > 100:
+                lambda_fp *= .2
+            if fp_raw  * lambda_fp > 10:
+                lambda_fp *= .9
+            if fp_raw  * lambda_fp < 1:
+                lambda_fp *= 1.1
+            feature_penalty = feature_penalty * lambda_fp
             loss = loss.mean() + feature_penalty
             for i, fake_stop in enumerate(fake_stop_list):
                 fake_stop.reinforce(reward[:, i:i+1])
@@ -545,5 +556,5 @@ if __name__ == '__main__':
                 T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-
-        print 'G', gen_iter, tonumpy(loss), Timer.get('train_g')
+        loss = loss - feature_penalty
+        print 'G', gen_iter, tonumpy(loss), tonumpy(feature_penalty), Timer.get('train_g')
