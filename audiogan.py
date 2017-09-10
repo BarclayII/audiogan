@@ -431,7 +431,7 @@ if __name__ == '__main__':
                 cls_d = d(real_data, real_len, embed_d)
                 target = tovar(T.ones(*(cls_d.size())))
                 weight = length_mask(cls_d.size(), div_roundup(real_len.data, args.framesize))
-                loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / real_len
+                loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / (real_len.float() / args.framesize)
                 loss_d = loss_d.mean()
 
                 cs2 = tovar(cs2).long()
@@ -442,7 +442,7 @@ if __name__ == '__main__':
                 cls_g = d(fake_data + tovar(T.randn(*fake_data.size())), fake_len, embed_d)
                 target = tovar(T.zeros(*(cls_g.size())))
                 weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
-                loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / real_len
+                loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
                 loss_g = loss_g.mean()
                 loss = loss_d + loss_g
 
@@ -484,7 +484,7 @@ if __name__ == '__main__':
             cls_g = d(fake_data, fake_len, embed_d)
             target = tovar(T.ones(*(cls_g.size())))
             weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
-            loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight)
+            loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
 
             reward = -loss.data
             baseline = baseline * 0.999 + reward.mean() * 0.001
