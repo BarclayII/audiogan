@@ -45,6 +45,19 @@ def word_to_seq(word, maxcharlen):
     char_seq[:len(word)] = [ord(c) for c in word]
     return char_seq
 
+def pick_sample_from_word(key, maxlen, dataset, frame_size=None):
+    while True:
+        sample_idx = RNG.choice(dataset[key].shape[0])
+        sample_in = dataset[key][sample_idx]
+        sample_len = sum(1 - NP.cumprod((sample_in == 0)[::-1]))
+        if sample_len > maxlen:
+            continue
+        length = sample_len if frame_size is None else util.roundup(sample_len, frame_size)
+
+        sample_out = NP.zeros(maxlen)
+        sample_out[:sample_len] = sample_in[:sample_len]
+        return sample_out, length
+
 def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args, frame_size=None):
     epoch = 0
     batch = 0
@@ -57,16 +70,7 @@ def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args,
         while i < batch_size:
             key = RNG.choice(keys)
             key_wrong = RNG.choice(keys)
-            sample_idx = RNG.choice(dataset[key].shape[0])
-            sample_in = dataset[key][sample_idx]
-            sample_len = sum(1 - NP.cumprod((sample_in == 0)[::-1]))
-            if sample_len > maxlen:
-                continue
-
-            length = sample_len if frame_size is None else util.roundup(sample_len, frame_size)
-
-            sample_out = NP.zeros(maxlen)
-            sample_out[:sample_len] = sample_in[:sample_len]
+            sample_out, length = pick_sample_from_word(key, maxlen, dataset, frame_size)
             sample_char_seq = word_to_seq(key, maxcharlen)
             sample_char_seq_wrong = word_to_seq(key_wrong, maxcharlen)
 
@@ -96,10 +100,9 @@ def conditional_dataloader(batch_size, args, maxlen=None, frame_size=None):
     dataloader_val = _conditional_dataloader(
             batch_size, dataset, maxlen, maxcharlen, keys[n_train_keys:], args, frame_size)
 
-    return maxlen, dataloader, dataloader_val
+    return dataset, maxlen, dataloader, dataloader_val
 
-def pick_words(batch_size, args):
-    dataset = h5py.File(args.dataset)
+def pick_words(batch_size, dataset, args):
     keys = _valid_keys(dataset.keys(), args)
     maxcharlen = max(len(k) for k in keys)
 

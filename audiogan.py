@@ -310,7 +310,7 @@ print args
 
 batch_size = args.batchsize
 
-maxlen, dataloader, dataloader_val = dataset.dataloader(batch_size, args, maxlen=args.maxlen, frame_size=args.framesize)
+dataset_h5, maxlen, dataloader, dataloader_val = dataset.dataloader(batch_size, args, maxlen=args.maxlen, frame_size=args.framesize)
 
 def logdirs(logdir, modelnamesave):
     logdir = (
@@ -338,7 +338,7 @@ z_fixed = tovar(RNG.randn(batch_size, nframes, args.noisesize))
 
 e_g = Embedder(args.embedsize).cuda()
 e_d = Embedder(args.embedsize).cuda()
-cseq, cseq_fixed, clen_fixed = dataset.pick_words(batch_size, args)
+cseq, cseq_fixed, clen_fixed = dataset.pick_words(batch_size, dataset_h5, args)
 cseq_fixed, clen_fixed = tovar(cseq_fixed, clen_fixed)
 cseq_fixed = cseq_fixed.long()
 clen_fixed = clen_fixed.long()
@@ -350,7 +350,43 @@ d = Discriminator(
         num_layers=args.rnnd_layers,
         ).cuda()
 
+def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
+    PL.plot(sample)
+    PL.savefig('temp.png')
+    PL.close()
+    with open('temp.png') as f:
+        imgbuf = f.read()
+    img = Image.open('temp.png')
+    summary = TF.Summary.Image(
+            height=img.height,
+            width=img.width,
+            colorspace=3,
+            encoded_image_string=imgbuf
+            )
+    summary = TF.Summary.Value(tag='%s/%s' % (tag, word), image=summary)
+    writer.add_summary(TF.Summary(value=[summary]), gen_iter)
+
+def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
+    librosa.output.write_wav('temp.wav', sample, sr=8000)
+    with open('temp.wav') as f:
+        wavbuf = f.read()
+    summary = TF.Summary.Audio(
+            sample_rate=8000,
+            num_channels=1,
+            length_frames=length,
+            encoded_audio_string=wavbuf,
+            content_type='audio/wav'
+            )
+    summary = TF.Summary.Value(tag='%s/%s' % (tag, word), audio=summary)
+    d_train_writer.add_summary(TF.Summary(value=[summary]), gen_iter)
+
 d_train_writer = TF.summary.FileWriter(log_train_d)
+
+# Add real waveforms
+for i in range(batch_size):
+    sample, length = dataset.pick_sample_from_word(cseq[i], maxlen, dataset_h5, args.framesize)
+    add_waveform_summary(d_train_writer, cseq[i], sample[:length], 0, 'real_plot')
+    add_audio_summary(d_train_writer, cseq[i], sample[:length], length, 0, 'real_audio')
 
 gen_iter = 0
 epoch = 1
@@ -361,8 +397,8 @@ baseline = 0.
 param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
-opt_g = T.optim.RMSprop(param_g, lr=1e-5)
-opt_d = T.optim.RMSprop(param_d, lr=1e-5)
+opt_g = T.optim.Adam(param_g, lr=1e-5)
+opt_d = T.optim.SGD(param_d, lr=1e-5)
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
@@ -379,7 +415,7 @@ if __name__ == '__main__':
         for j in range(args.critic_iter):
             with Timer.new('load', print_=False):
                 epoch, batch_id, real_data, real_len, _, cs, cl, _, csw, clw = dataloader.next()
-                _, cs2, cl2 = dataset.pick_words(batch_size, args)
+                _, cs2, cl2 = dataset.pick_words(batch_size, dataset_h5, args)
 
             with Timer.new('train_d', print_=False):
                 real_data = tovar(real_data + RNG.randn(*real_data.shape))
@@ -431,7 +467,7 @@ if __name__ == '__main__':
         for p in param_g:
             p.requires_grad = True
 
-        _, cs, cl = dataset.pick_words(batch_size, args)
+        _, cs, cl = dataset.pick_words(batch_size, dataset_h5, args)
         with Timer.new('train_g', print_=False):
             cs = tovar(cs).long()
             cl = tovar(cl).long()
@@ -446,6 +482,16 @@ if __name__ == '__main__':
 
             reward = -loss.data
             baseline = baseline * 0.999 + reward.mean() * 0.001
+            d_train_writer.add_summary(
+                    TF.Summary(
+                        value=[
+                            TF.Summary.Value(tag='reward_baseline', simple_value=baseline),
+                            TF.Summary.Value(tag='reward/mean', simple_value=reward.cpu().numpy().mean()),
+                            TF.Summary.Value(tag='reward/std', simple_value=reward.cpu().numpy().std()),
+                            ]
+                        ),
+                    gen_iter
+                    )
             reward = (reward - baseline).unsqueeze(1) * weight.data
             loss = loss.mean()
             for i, fake_stop in enumerate(fake_stop_list):
@@ -462,36 +508,12 @@ if __name__ == '__main__':
 
             for batch in range(batch_size):
                 fake_sample = fake_data[batch, :fake_len[batch]]
-                PL.plot(fake_sample)
-                PL.savefig('temp.png')
-                PL.close()
-                with open('temp.png') as f:
-                    imgbuf = f.read()
-                img = Image.open('temp.png')
-                summary = TF.Summary.Image(
-                        height=img.height,
-                        width=img.width,
-                        colorspace=3,
-                        encoded_image_string=imgbuf
-                        )
-                summary = TF.Summary.Value(tag='plot/%s' % cseq[batch], image=summary)
-                d_train_writer.add_summary(TF.Summary(value=[summary]), gen_iter)
+                add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter)
 
             if gen_iter % 50 == 0:
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :fake_len[batch]]
-                    librosa.output.write_wav('temp.wav', fake_sample, sr=8000)
-                    with open('temp.wav') as f:
-                        wavbuf = f.read()
-                    summary = TF.Summary.Audio(
-                            sample_rate=8000,
-                            num_channels=1,
-                            length_frames=fake_len[batch],
-                            encoded_audio_string=wavbuf,
-                            content_type='audio/wav'
-                            )
-                    summary = TF.Summary.Value(tag='audio/%s' % cseq[batch], audio=summary)
-                    d_train_writer.add_summary(TF.Summary(value=[summary]), gen_iter)
+                    add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter)
                 T.save(d, '%s-dis-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
