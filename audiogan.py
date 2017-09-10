@@ -268,7 +268,7 @@ class Discriminator(NN.Module):
                 NN.Linear(state_size // 2, 1),
                 )
 
-    def forward(self, x, length, c):
+    def forward(self, x, length, c, percent_used = 0.1):
         frame_size = self._frame_size
         state_size = self._state_size
         num_layers = self._num_layers
@@ -298,6 +298,8 @@ class Discriminator(NN.Module):
         max_nframes = lstm_out.size()[1]
 
         classifier_in = lstm_out.view(batch_size * max_nframes, state_size)
+        width = classifier_in.size()[1] * percent_used
+        classifier_in[:,int(round(width)):] = 0
         classifier_out = self.classifier(classifier_in).view(batch_size, max_nframes)
 
         return classifier_out, cnn_outputs
@@ -395,7 +397,7 @@ param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
 opt_g = T.optim.RMSprop(param_g, lr=1e-5)
-opt_d = T.optim.RMSprop(param_d, lr=1e-5)
+opt_d = T.optim.SGD(param_d, lr=1e-4)
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
