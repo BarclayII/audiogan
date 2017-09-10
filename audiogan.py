@@ -295,9 +295,6 @@ parser.add_argument('--maxlen', type=int, default=0)
 
 args = parser.parse_args()
 args.conditional = True
-png_file = 'temp%s.png' % args.modelname
-wav_file = 'temp%s.wav' % args.modelname
-
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
@@ -329,6 +326,9 @@ def logdirs(logdir, modelnamesave):
         raise IOError('%s is not a directory' % logdir)
     return logdir
 log_train_d = logdirs(args.logdir, modelnamesave)
+png_file = '%s/temp.png' % log_train_d
+wav_file = '%s/temp.wav' % log_train_d
+
 
 g = Generator(
         frame_size=args.framesize,
