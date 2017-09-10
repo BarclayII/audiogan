@@ -278,10 +278,9 @@ class Discriminator(NN.Module):
         batch_size, maxlen = x.size()
         max_nframes = div_roundup(maxlen, frame_size)
         nframes = div_roundup(length, frame_size)
-        x_andy = x.view(batch_size, max_nframes, frame_size)
-        c = c.unsqueeze(1).expand(batch_size, max_nframes, embed_size)
-        x_andy = T.cat([x_andy, c], 2).permute(1, 0, 2)
-        xold = x
+        nframes_max = tonumpy(nframes).max()
+        c = c.unsqueeze(1).expand(batch_size, nframes_max, embed_size)
+        xold = x[:, :nframes_max * frame_size]
 
         initial_state = (
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
@@ -293,15 +292,15 @@ class Discriminator(NN.Module):
             cnn_output = F.leaky_relu(cnn_layer(cnn_output))
             cnn_outputs.append(cnn_output)
         x = cnn_output
-        x = x.view(32,max_nframes,frame_size)
+        x = x.view(32, nframes_max, frame_size)
         x = T.cat([x, c], 2).permute(1, 0, 2)
         lstm_out, (lstm_h, lstm_c) = dynamic_rnn(self.rnn, x, nframes, initial_state)
         lstm_out = lstm_out.permute(1, 0, 2)
         max_nframes = lstm_out.size()[1]
 
-        classifier_in = lstm_out.view(batch_size * max_nframes, state_size)
+        classifier_in = lstm_out.view(batch_size * nframes_max, state_size)
 
-        classifier_out = self.classifier(classifier_in).view(batch_size, max_nframes)
+        classifier_out = self.classifier(classifier_in).view(batch_size, nframes_max)
 
         return classifier_out, cnn_outputs
 
