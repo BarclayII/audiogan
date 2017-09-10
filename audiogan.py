@@ -317,6 +317,8 @@ parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=0.0)
 parser.add_argument('--ggradclip', type=float, default=0.0)
+parser.add_argument('--dlr', type=float, default=1e-4)
+parser.add_argument('--glr', type=float, default=1e-5)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
@@ -330,6 +332,8 @@ parser.add_argument('--maxlen', type=int, default=0)
 
 args = parser.parse_args()
 args.conditional = True
+png_file = 'temp%s.png' % args.modelname
+wav_file = 'temp%s.wav' % args.modelname
 
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
@@ -389,11 +393,11 @@ d = Discriminator(
 
 def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
     PL.plot(sample)
-    PL.savefig('temp.png')
+    PL.savefig(png_file)
     PL.close()
-    with open('temp.png') as f:
+    with open(png_file, 'rb') as f:
         imgbuf = f.read()
-    img = Image.open('temp.png')
+    img = Image.open(png_file)
     summary = TF.Summary.Image(
             height=img.height,
             width=img.width,
@@ -404,8 +408,8 @@ def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
     writer.add_summary(TF.Summary(value=[summary]), gen_iter)
 
 def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
-    librosa.output.write_wav('temp.wav', sample, sr=8000)
-    with open('temp.wav') as f:
+    librosa.output.write_wav(wav_file, sample, sr=8000)
+    with open(wav_file, 'rb') as f:
         wavbuf = f.read()
     summary = TF.Summary.Audio(
             sample_rate=8000,
@@ -433,9 +437,8 @@ baseline = 0.
 param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
-
-opt_g = T.optim.Adam(param_g, lr=1e-5)
-opt_d = T.optim.SGD(param_d, lr=1e-4)
+opt_g = T.optim.RMSprop(param_g, lr=args.glr)
+opt_d = T.optim.SGD(param_d, lr=args.dlr)
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
