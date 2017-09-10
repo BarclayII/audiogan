@@ -469,7 +469,7 @@ if __name__ == '__main__':
                 dists_d = calc_dists(hidden_states_d)
                 target = tovar(T.ones(*(cls_d.size())))
                 weight = length_mask(cls_d.size(), div_roundup(real_len.data, args.framesize))
-                loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / real_len
+                loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / (real_len.float() / args.framesize)
                 loss_d = loss_d.mean()
 
                 cs2 = tovar(cs2).long()
@@ -482,7 +482,7 @@ if __name__ == '__main__':
                 target = tovar(T.zeros(*(cls_g.size())))
                 weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
                 #feature_penalty = [T.pow(r - f,2).mean() for r, f in zip(dists_d, dists_g)]
-                loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / real_len
+                loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
                 loss_g = loss_g.mean()
                 loss = loss_d + loss_g
 
@@ -537,7 +537,7 @@ if __name__ == '__main__':
                 feature_penalty += T.pow((r[0]-f[0])/r[1],2).mean()/batch_size
             target = tovar(T.ones(*(cls_g.size())))
             weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
-            loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight)
+            loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
 
             reward = -loss.data
             baseline = baseline * 0.999 + reward.mean() * 0.001
