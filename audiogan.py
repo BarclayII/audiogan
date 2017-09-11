@@ -289,7 +289,7 @@ parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=0.0)
 parser.add_argument('--ggradclip', type=float, default=0.0)
-parser.add_argument('--dlr', type=float, default=1e-4)
+parser.add_argument('--dlr', type=float, default=1e-5)
 parser.add_argument('--glr', type=float, default=1e-3)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
