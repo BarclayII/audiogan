@@ -108,9 +108,11 @@ def clip_grad(params, clip_norm):
     if clip_norm == 0:
         return
     norm = sum(T.norm(p.grad.data) for p in params if p.grad is not None)
-    for p in params:
-        if p.grad is not None:
-            p.grad.data /= norm
+    if norm < clip_norm:
+        for p in params:
+            if p.grad is not None:
+                p.grad.data /= norm
+    return norm
 
 
 class Embedder(NN.Module):
@@ -438,7 +440,7 @@ if __name__ == '__main__':
 
                 embed_d = e_d(cs, cl)
                 cls_d = d(real_data, real_len, embed_d)
-                target = tovar(T.ones(*(cls_d.size())))
+                target = tovar(T.ones(*(cls_d.size())) * 0.9)
                 weight = length_mask(cls_d.size(), div_roundup(real_len.data, args.framesize))
                 loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / (real_len.float() / args.framesize)
                 loss_d = loss_d.mean()
@@ -462,7 +464,7 @@ if __name__ == '__main__':
                 opt_d.zero_grad()
                 loss.backward()
                 check_grad(param_d)
-                clip_grad(param_d, args.dgradclip)
+                d_grad_norm = clip_grad(param_d, args.dgradclip)
                 opt_d.step()
 
             loss_d, loss_g, loss, cls_d, cls_g = tonumpy(loss_d, loss_g, loss, cls_d, cls_g)
@@ -480,12 +482,16 @@ if __name__ == '__main__':
                             TF.Summary.Value(tag='cls_g/std', simple_value=cls_g.std()),
                             TF.Summary.Value(tag='acc_d', simple_value=acc_d),
                             TF.Summary.Value(tag='acc_g', simple_value=acc_g),
+                            TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
                             ]
                         ),
                     gen_iter * args.critic_iter + j
                     )
 
             print 'D', epoch, batch_id, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
+
+            if acc_d > 0.5 and acc_g > 0.5:
+                break
 
         gen_iter += 1
         for p in param_g:
@@ -524,7 +530,15 @@ if __name__ == '__main__':
             loss.backward(retain_graph=True)
             T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
             check_grad(param_g)
-            clip_grad(param_g, args.ggradclip)
+            g_grad_norm = clip_grad(param_g, args.ggradclip)
+            d_train_writer.add_summary(
+                    TF.Summary(
+                        value=[
+                            TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
+                            ]
+                        ),
+                    gen_iter
+                    )
             opt_g.step()
 
         if gen_iter % 10 == 0:
