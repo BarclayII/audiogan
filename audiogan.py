@@ -407,7 +407,7 @@ gen_iter = 0
 epoch = 1
 l = 10
 alpha = 0.1
-baseline = 0.
+baseline = None
 
 param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
@@ -511,7 +511,7 @@ if __name__ == '__main__':
             loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
 
             reward = -loss.data
-            baseline = baseline * 0.999 + reward.mean() * 0.001
+            baseline = reward.mean() if baseline is None else (baseline * 0.999 + reward.mean() * 0.001)
             d_train_writer.add_summary(
                     TF.Summary(
                         value=[
