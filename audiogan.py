@@ -107,6 +107,15 @@ def check_grad(params):
         assert anybig == 0
 
 
+def clip_grad(params, clip_norm):
+    if clip_norm == 0:
+        return
+    norm = sum(T.norm(p.grad.data) for p in params if p.grad is not None)
+    for p in params:
+        if p.grad is not None:
+            p.grad.data /= norm
+
+
 class Embedder(NN.Module):
     def __init__(self,
                  output_size=100,
@@ -317,7 +326,7 @@ parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=0.0)
 parser.add_argument('--ggradclip', type=float, default=0.0)
 parser.add_argument('--dlr', type=float, default=1e-4)
-parser.add_argument('--glr', type=float, default=1e-5)
+parser.add_argument('--glr', type=float, default=1e-3)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
@@ -327,7 +336,7 @@ parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='dataset.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
-parser.add_argument('--maxlen', type=int, default=0)
+parser.add_argument('--maxlen', type=int, default=40000, help='maximum sample length (0 for unlimited)')
 
 args = parser.parse_args()
 args.conditional = True
@@ -437,7 +446,7 @@ param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
 opt_g = T.optim.RMSprop(param_g, lr=args.glr)
-opt_d = T.optim.SGD(param_d, lr=args.dlr)
+opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
@@ -471,6 +480,8 @@ if __name__ == '__main__':
                 weight = length_mask(cls_d.size(), div_roundup(real_len.data, args.framesize))
                 loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / (real_len.float() / args.framesize)
                 loss_d = loss_d.mean()
+                correct_d = ((cls_d.data > 0).float() * weight.data).sum()
+                num_d = weight.data.sum()
 
                 cs2 = tovar(cs2).long()
                 cl2 = tovar(cl2).long()
@@ -484,14 +495,19 @@ if __name__ == '__main__':
                 #feature_penalty = [T.pow(r - f,2).mean() for r, f in zip(dists_d, dists_g)]
                 loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
                 loss_g = loss_g.mean()
+                correct_g = ((cls_g.data < 0).float() * weight.data).sum()
+                num_g = weight.data.sum()
                 loss = loss_d + loss_g
 
                 opt_d.zero_grad()
                 loss.backward()
                 check_grad(param_d)
+                clip_grad(param_d, args.dgradclip)
                 opt_d.step()
 
             loss_d, loss_g, loss, cls_d, cls_g = tonumpy(loss_d, loss_g, loss, cls_d, cls_g)
+            acc_d = correct_d / num_d
+            acc_g = correct_g / num_g
             d_train_writer.add_summary(
                     TF.Summary(
                         value=[
@@ -502,11 +518,13 @@ if __name__ == '__main__':
                             TF.Summary.Value(tag='cls_d/std', simple_value=cls_d.std()),
                             TF.Summary.Value(tag='cls_g/mean', simple_value=cls_g.mean()),
                             TF.Summary.Value(tag='cls_g/std', simple_value=cls_g.std()),
+                            TF.Summary.Value(tag='acc_d', simple_value=acc_d),
+                            TF.Summary.Value(tag='acc_g', simple_value=acc_g),
                             ]
                         )
                     )
 
-            print 'D', epoch, batch_id, loss, Timer.get('load'), Timer.get('train_d')
+            print 'D', epoch, batch_id, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
 
         gen_iter += 1
         for p in param_g:
@@ -566,6 +584,8 @@ if __name__ == '__main__':
             opt_g.zero_grad()
             loss.backward(retain_graph=True)
             T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
+            check_grad(param_g)
+            clip_grad(param_g, args.ggradclip)
             opt_g.step()
 
         if gen_iter % 50 == 0:
