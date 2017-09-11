@@ -108,10 +108,10 @@ def clip_grad(params, clip_norm):
     if clip_norm == 0:
         return
     norm = sum(T.norm(p.grad.data) for p in params if p.grad is not None)
-    if norm < clip_norm:
+    if norm > clip_norm:
         for p in params:
             if p.grad is not None:
-                p.grad.data /= norm
+                p.grad.data /= (norm / clip_norm)
     return norm
 
 
