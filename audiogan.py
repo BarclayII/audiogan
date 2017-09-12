@@ -469,7 +469,8 @@ if __name__ == '__main__':
                 _, cs2, cl2 = dataset.pick_words(batch_size, dataset_h5, args)
 
             with Timer.new('train_d', print_=False):
-                real_data = tovar(real_data + RNG.randn(*real_data.shape))
+                noise = tovar(RNG.randn(*real_data.shape))
+                real_data = tovar(real_data) + noise
                 real_len = tovar(real_len).long()
                 cs = tovar(cs).long()
                 cl = tovar(cl).long()
@@ -491,7 +492,8 @@ if __name__ == '__main__':
                 embed_g = e_g(cs2, cl2)
                 embed_d = e_d(cs2, cl2)
                 fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
-                cls_g, _ = d(fake_data + tovar(T.randn(*fake_data.size())), fake_len, embed_d)
+                noise = tovar(T.randn(*fake_data.size()))
+                cls_g, _ = d(fake_data + noise, fake_len, embed_d)
 
                 target = tovar(T.zeros(*(cls_g.size())))
                 weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
@@ -544,7 +546,8 @@ if __name__ == '__main__':
             embed_g = e_g(cs, cl)
             embed_d = e_d(cs, cl)
             fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
-            fake_data += tovar(T.randn(*fake_data.size()))
+            noise = T.randn(*fake_data.size())
+            fake_data += noise
             
             cls_g, hidden_states_g = d(fake_data, fake_len, embed_d)
             
@@ -565,7 +568,7 @@ if __name__ == '__main__':
             loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
 
             reward = -loss.data
-            baseline = reward.mean() if baseline is None else (baseline * 0.999 + reward.mean() * 0.001)
+            baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
             d_train_writer.add_summary(
                     TF.Summary(
                         value=[
