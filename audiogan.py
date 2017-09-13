@@ -394,21 +394,10 @@ def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
 d_train_writer = TF.summary.FileWriter(log_train_d)
 
 # Add real waveforms
-cseq = []
-cseq_fixed = []
-clen_fixed = []
+cseq, cseq_fixed, clen_fixed, samples, lengths = dataset.pick_words(batch_size, maxlen, dataset_h5, args)
 for i in range(batch_size):
-    while True:
-        cs, csf, clf = dataset.pick_words(1, dataset_h5, args)
-        sample, length = dataset.pick_sample_from_word(cs[0], maxlen, dataset_h5, args.framesize)
-        if sample is not None:
-            break
-    cseq.extend(cs)
-    cseq_fixed.extend(csf)
-    clen_fixed.extend(clf)
-
-    add_waveform_summary(d_train_writer, cs[0], sample[:length], 0, 'real_plot')
-    add_audio_summary(d_train_writer, cs[0], sample[:length], length, 0, 'real_audio')
+    add_waveform_summary(d_train_writer, cseq[i], samples[i, :lengths[i]], 0, 'real_plot')
+    add_audio_summary(d_train_writer, cseq[i], samples[i, :lengths[i]], lengths[i], 0, 'real_audio')
 
 cseq_fixed = NP.array(cseq_fixed)
 clen_fixed = NP.array(clen_fixed)
@@ -442,8 +431,8 @@ if __name__ == '__main__':
             p.requires_grad = False
         for j in range(args.critic_iter):
             with Timer.new('load', print_=False):
-                epoch, batch_id, real_data, real_len, _, cs, cl, _, csw, clw = dataloader.next()
-                _, cs2, cl2 = dataset.pick_words(batch_size, dataset_h5, args)
+                epoch, batch_id, real_data, real_len, _, cs, cl = dataloader.next()
+                _, cs2, cl2, _, _ = dataset.pick_words(batch_size, maxlen, dataset_h5, args, skip_samples=True)
 
             with Timer.new('train_d', print_=False):
                 noise = tovar(RNG.randn(*real_data.shape))
@@ -512,7 +501,7 @@ if __name__ == '__main__':
         for p in param_g:
             p.requires_grad = True
 
-        _, cs, cl = dataset.pick_words(batch_size, dataset_h5, args)
+        _, cs, cl, _, _ = dataset.pick_words(batch_size, maxlen, dataset_h5, args, skip_samples=True)
         with Timer.new('train_g', print_=False):
             cs = tovar(cs).long()
             cl = tovar(cl).long()

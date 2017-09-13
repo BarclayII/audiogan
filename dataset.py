@@ -45,20 +45,36 @@ def word_to_seq(word, maxcharlen):
     char_seq[:len(word)] = [ord(c) for c in word]
     return char_seq
 
-def pick_sample_from_word(key, maxlen, dataset, frame_size=None):
-    while True:
-        sample_idx = RNG.choice(dataset[key].shape[0])
+def _pick_sample_from_word(key, maxlen, dataset, frame_size=None, skip_samples=False):
+    sample_idx = RNG.choice(dataset[key].shape[0])
+    sample_out = NP.zeros(maxlen)
+    length = 0
+    if not skip_samples:
         sample_in = dataset[key][sample_idx]
         sample_len = sum(1 - NP.cumprod((sample_in == 0)[::-1]))
         if sample_len > maxlen:
             return None, None
         length = sample_len if frame_size is None else util.roundup(sample_len, frame_size)
 
-        sample_out = NP.zeros(maxlen)
         sample_out[:sample_len] = sample_in[:sample_len]
-        return sample_out, length
+    return sample_out, length
 
-def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args, frame_size=None):
+def pick_word(maxlen, dataset, args, frame_size=None, skip_samples=False):
+    keys = _valid_keys(dataset.keys(), args)
+    maxcharlen = max(len(k) for k in keys)
+
+    while True:
+        key = RNG.choice(keys)
+        sample_out, length = _pick_sample_from_word(key, maxlen, dataset, frame_size, skip_samples)
+        if sample_out is not None:
+            break
+
+    return key, word_to_seq(key, maxcharlen), len(key), sample_out, length
+
+def pick_words(batch_size, maxlen, dataset, args, frame_size=None, skip_samples=False):
+    return [NP.array(a) for a in zip(*(pick_word(maxlen, dataset, args, frame_size, skip_samples) for _ in range(batch_size)))]
+
+def _conditional_dataloader(batch_size, dataset, maxlen, keys, args, frame_size=None):
     epoch = 0
     batch = 0
     if frame_size is not None:
@@ -67,22 +83,8 @@ def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args,
         samples = []
         batch += 1
         i = 0
-        while i < batch_size:
-            key = RNG.choice(keys)
-            key_wrong = RNG.choice(keys)
-            sample_out, length = pick_sample_from_word(key, maxlen, dataset, frame_size)
-            if sample_out is None:
-                continue
-            sample_char_seq = word_to_seq(key, maxcharlen)
-            sample_char_seq_wrong = word_to_seq(key_wrong, maxcharlen)
-
-            samples.append((
-                sample_out, length, key, sample_char_seq, len(key),
-                key_wrong, sample_char_seq_wrong, len(key_wrong)
-                ))
-            i += 1
-
-        yield [epoch, batch] + [NP.array(a) for a in zip(*samples)]
+        keys, cseq, clen, samples, lengths = pick_words(batch_size, maxlen, dataset, args, frame_size)
+        yield [epoch, batch, samples, lengths, keys, cseq, clen]
 
 def _valid_keys(keys, args):
     keys = [k for k in keys if not (k[-1] == '-' or k[0] == '(')]
@@ -95,24 +97,13 @@ def conditional_dataloader(batch_size, args, maxlen=None, frame_size=None):
     keys = list(RNG.permutation(keys))
     n_train_keys = len(keys) // 10 * 9
     maxlen = maxlen or max(dataset[k].shape[1] for k in keys)
-    maxcharlen = max(len(k) for k in keys)
 
     dataloader = _conditional_dataloader(
-            batch_size, dataset, maxlen, maxcharlen, keys[:n_train_keys], args, frame_size)
+            batch_size, dataset, maxlen, keys[:n_train_keys], args, frame_size)
     dataloader_val = _conditional_dataloader(
-            batch_size, dataset, maxlen, maxcharlen, keys[n_train_keys:], args, frame_size)
+            batch_size, dataset, maxlen, keys[n_train_keys:], args, frame_size)
 
     return dataset, maxlen, dataloader, dataloader_val
-
-def pick_words(batch_size, dataset, args):
-    keys = _valid_keys(dataset.keys(), args)
-    maxcharlen = max(len(k) for k in keys)
-
-    picked_keys = RNG.choice(keys, batch_size)
-    cseq = NP.array([word_to_seq(k, maxcharlen) for k in picked_keys])
-    clen = NP.array([len(k) for k in picked_keys])
-
-    return picked_keys, cseq, clen
 
 def dataloader(batch_size, args, maxlen=None, frame_size=None):
     # Returns a generator which returns
