@@ -51,7 +51,7 @@ def pick_sample_from_word(key, maxlen, dataset, frame_size=None):
         sample_in = dataset[key][sample_idx]
         sample_len = sum(1 - NP.cumprod((sample_in == 0)[::-1]))
         if sample_len > maxlen:
-            continue
+            return None, None
         length = sample_len if frame_size is None else util.roundup(sample_len, frame_size)
 
         sample_out = NP.zeros(maxlen)
@@ -71,6 +71,8 @@ def _conditional_dataloader(batch_size, dataset, maxlen, maxcharlen, keys, args,
             key = RNG.choice(keys)
             key_wrong = RNG.choice(keys)
             sample_out, length = pick_sample_from_word(key, maxlen, dataset, frame_size)
+            if sample_out is None:
+                continue
             sample_char_seq = word_to_seq(key, maxcharlen)
             sample_char_seq_wrong = word_to_seq(key_wrong, maxcharlen)
 

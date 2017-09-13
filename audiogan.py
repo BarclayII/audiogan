@@ -389,10 +389,6 @@ z_fixed = tovar(RNG.randn(batch_size, nframes, args.noisesize))
 
 e_g = Embedder(args.embedsize).cuda()
 e_d = Embedder(args.embedsize).cuda()
-cseq, cseq_fixed, clen_fixed = dataset.pick_words(batch_size, dataset_h5, args)
-cseq_fixed, clen_fixed = tovar(cseq_fixed, clen_fixed)
-cseq_fixed = cseq_fixed.long()
-clen_fixed = clen_fixed.long()
 
 d = Discriminator(
         frame_size=args.framesize,
@@ -434,10 +430,27 @@ def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
 d_train_writer = TF.summary.FileWriter(log_train_d)
 
 # Add real waveforms
+cseq = []
+cseq_fixed = []
+clen_fixed = []
 for i in range(batch_size):
-    sample, length = dataset.pick_sample_from_word(cseq[i], maxlen, dataset_h5, args.framesize)
-    add_waveform_summary(d_train_writer, cseq[i], sample[:length], 0, 'real_plot')
-    add_audio_summary(d_train_writer, cseq[i], sample[:length], length, 0, 'real_audio')
+    while True:
+        cs, csf, clf = dataset.pick_words(1, dataset_h5, args)
+        sample, length = dataset.pick_sample_from_word(cs[0], maxlen, dataset_h5, args.framesize)
+        if sample is not None:
+            break
+    cseq.extend(cs)
+    cseq_fixed.extend(csf)
+    clen_fixed.extend(clf)
+
+    add_waveform_summary(d_train_writer, cs[0], sample[:length], 0, 'real_plot')
+    add_audio_summary(d_train_writer, cs[0], sample[:length], length, 0, 'real_audio')
+
+cseq_fixed = NP.array(cseq_fixed)
+clen_fixed = NP.array(clen_fixed)
+cseq_fixed, clen_fixed = tovar(cseq_fixed, clen_fixed)
+cseq_fixed = cseq_fixed.long()
+clen_fixed = clen_fixed.long()
 
 gen_iter = 0
 epoch = 1
@@ -546,7 +559,7 @@ if __name__ == '__main__':
             embed_g = e_g(cs, cl)
             embed_d = e_d(cs, cl)
             fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
-            noise = T.randn(*fake_data.size())
+            noise = tovar(T.randn(*fake_data.size()))
             fake_data += noise
             
             cls_g, hidden_states_g = d(fake_data, fake_len, embed_d)
