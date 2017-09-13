@@ -519,7 +519,7 @@ if __name__ == '__main__':
             embed_g = e_g(cs, cl)
             embed_d = e_d(cs, cl)
             fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
-            noise = T.randn(*fake_data.size())
+            noise = tovar(T.randn(*fake_data.size()))
             fake_data += noise
             cls_g = d(fake_data, fake_len, embed_d)
             target = tovar(T.ones(*(cls_g.size())))
