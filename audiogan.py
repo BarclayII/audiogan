@@ -442,6 +442,7 @@ cseq_fixed = cseq_fixed.long()
 clen_fixed = clen_fixed.long()
 
 gen_iter = 0
+dis_iter = 0
 epoch = 1
 l = 10
 alpha = 0.1
@@ -466,6 +467,7 @@ if __name__ == '__main__':
         for p in param_g:
             p.requires_grad = False
         for j in range(args.critic_iter):
+            dis_iter += 1
             with Timer.new('load', print_=False):
                 epoch, batch_id, real_data, real_len, _, cs, cl = dataloader.next()
                 _, cs2, cl2, _, _ = dataset.pick_words(batch_size, maxlen, dataset_h5, args, skip_samples=True)
@@ -528,7 +530,8 @@ if __name__ == '__main__':
                             TF.Summary.Value(tag='acc_g', simple_value=acc_g),
                             TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
                             ]
-                        )
+                        ),
+                    dis_iter
                     )
 
             print 'D', epoch, batch_id, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
