@@ -400,15 +400,15 @@ clen_fixed = []
 for i in range(batch_size):
     while True:
         cs, csf, clf = dataset.pick_words(1, dataset_h5, args)
-        sample, length = dataset.pick_sample_from_word(cseq[i], maxlen, dataset_h5, args.framesize)
+        sample, length = dataset.pick_sample_from_word(cs[0], maxlen, dataset_h5, args.framesize)
         if sample is not None:
             break
     cseq.extend(cs)
     cseq_fixed.extend(csf)
     clen_fixed.extend(clf)
 
-    add_waveform_summary(d_train_writer, cseq[i], sample[:length], 0, 'real_plot')
-    add_audio_summary(d_train_writer, cseq[i], sample[:length], length, 0, 'real_audio')
+    add_waveform_summary(d_train_writer, cs[0], sample[:length], 0, 'real_plot')
+    add_audio_summary(d_train_writer, cs[0], sample[:length], length, 0, 'real_audio')
 
 cseq_fixed = NP.array(cseq_fixed)
 clen_fixed = NP.array(clen_fixed)
