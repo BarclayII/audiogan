@@ -254,7 +254,7 @@ class Discriminator(NN.Module):
         self._num_layers = num_layers
         self._cnn_struct = cnn_struct
         
-        self.cnn = []
+        self.cnn = NN.ModuleList()
         infilters = 1
         for layer in cnn_struct:
             
@@ -501,7 +501,6 @@ if __name__ == '__main__':
                 correct_g = ((cls_g.data < 0).float() * weight.data).sum()
                 num_g = weight.data.sum()
                 loss = loss_d + loss_g
-
                 opt_d.zero_grad()
                 loss.backward()
                 check_grad(param_d)
