@@ -67,6 +67,11 @@ def pick_word(maxlen, dataset, args, frame_size=None, skip_samples=False):
         key = RNG.choice(keys)
         sample_out, length = _pick_sample_from_word(key, maxlen, dataset, frame_size, skip_samples)
         if sample_out is not None:
+            if not skip_samples:
+                maxabs = NP.abs(sample_out).max()
+                if maxabs == 0:
+                    continue
+                sample_out /= maxabs
             break
 
     return key, word_to_seq(key, maxcharlen), len(key), sample_out, length

@@ -555,7 +555,7 @@ if __name__ == '__main__':
                 fake_sample = fake_data[batch, :fake_len[batch]]
                 add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter)
 
-            if gen_iter % 50 == 0:
+            if gen_iter % 100 == 0:
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :fake_len[batch]]
                     add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter)
