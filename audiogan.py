@@ -319,8 +319,8 @@ class Discriminator(NN.Module):
         #x = x.view(32, nframes_max, frame_size)
         max_nframes = x.size()[1]
         c = c.unsqueeze(1).expand(batch_size, max_nframes, embed_size)
-        x2 = T.cat([x, c], 2)
-        lstm_out, (lstm_h, lstm_c) = dynamic_rnn(self.rnn, x2, nframes, initial_state)
+        x2 = T.cat([x, c], 2).permute(1,0,2)
+        lstm_out, (_, _) = dynamic_rnn(self.rnn, x2, nframes, initial_state)
         lstm_out = lstm_out.permute(1, 0, 2)
         max_nframes = lstm_out.size()[1]
 
