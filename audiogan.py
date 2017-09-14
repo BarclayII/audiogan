@@ -322,7 +322,9 @@ print args
 
 batch_size = args.batchsize
 
-dataset_h5, maxlen, dataloader, dataloader_val = dataset.dataloader(batch_size, args, maxlen=args.maxlen, frame_size=args.framesize)
+dataset_h5, maxlen, dataloader, dataloader_val, keys_train, keys_val = \
+        dataset.dataloader(batch_size, args, maxlen=args.maxlen, frame_size=args.framesize)
+maxcharlen_train = max(len(k) for k in keys_train)
 
 def logdirs(logdir, modelnamesave):
     logdir = (
@@ -394,7 +396,7 @@ def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
 d_train_writer = TF.summary.FileWriter(log_train_d)
 
 # Add real waveforms
-cseq, cseq_fixed, clen_fixed, samples, lengths = dataset.pick_words(batch_size, maxlen, dataset_h5, args)
+_, _, samples, lengths, cseq, cseq_fixed, clen_fixed = dataloader_val.next()
 for i in range(batch_size):
     add_waveform_summary(d_train_writer, cseq[i], samples[i, :lengths[i]], 0, 'real_plot')
     add_audio_summary(d_train_writer, cseq[i], samples[i, :lengths[i]], lengths[i], 0, 'real_audio')
@@ -434,7 +436,8 @@ if __name__ == '__main__':
             dis_iter += 1
             with Timer.new('load', print_=False):
                 epoch, batch_id, real_data, real_len, _, cs, cl = dataloader.next()
-                _, cs2, cl2, _, _ = dataset.pick_words(batch_size, maxlen, dataset_h5, args, skip_samples=True)
+                _, cs2, cl2, _, _ = dataset.pick_words(
+                        batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
 
             with Timer.new('train_d', print_=False):
                 noise = tovar(RNG.randn(*real_data.shape))
@@ -503,7 +506,8 @@ if __name__ == '__main__':
         for p in param_g:
             p.requires_grad = True
 
-        _, cs, cl, _, _ = dataset.pick_words(batch_size, maxlen, dataset_h5, args, skip_samples=True)
+        _, cs, cl, _, _ = dataset.pick_words(
+                batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
         with Timer.new('train_g', print_=False):
             cs = tovar(cs).long()
             cl = tovar(cl).long()

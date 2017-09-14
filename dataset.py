@@ -59,10 +59,7 @@ def _pick_sample_from_word(key, maxlen, dataset, frame_size=None, skip_samples=F
         sample_out[:sample_len] = sample_in[:sample_len]
     return sample_out, length
 
-def pick_word(maxlen, dataset, args, frame_size=None, skip_samples=False):
-    keys = _valid_keys(dataset.keys(), args)
-    maxcharlen = max(len(k) for k in keys)
-
+def pick_word(maxlen, dataset, keys, maxcharlen, args, frame_size=None, skip_samples=False):
     while True:
         key = RNG.choice(keys)
         sample_out, length = _pick_sample_from_word(key, maxlen, dataset, frame_size, skip_samples)
@@ -76,20 +73,22 @@ def pick_word(maxlen, dataset, args, frame_size=None, skip_samples=False):
 
     return key, word_to_seq(key, maxcharlen), len(key), sample_out, length
 
-def pick_words(batch_size, maxlen, dataset, args, frame_size=None, skip_samples=False):
-    return [NP.array(a) for a in zip(*(pick_word(maxlen, dataset, args, frame_size, skip_samples) for _ in range(batch_size)))]
+def pick_words(batch_size, maxlen, dataset, keys, maxcharlen, args, frame_size=None, skip_samples=False):
+    return [NP.array(a) for a in zip(*(pick_word(maxlen, dataset, keys, maxcharlen, args, frame_size, skip_samples) for _ in range(batch_size)))]
 
 def _conditional_dataloader(batch_size, dataset, maxlen, keys, args, frame_size=None):
     epoch = 0
     batch = 0
+    maxcharlen = max(len(k) for k in keys)
+
     if frame_size is not None:
         maxlen = util.roundup(maxlen, frame_size)
     while True:
         samples = []
         batch += 1
         i = 0
-        keys, cseq, clen, samples, lengths = pick_words(batch_size, maxlen, dataset, args, frame_size)
-        yield [epoch, batch, samples, lengths, keys, cseq, clen]
+        picked_keys, cseq, clen, samples, lengths = pick_words(batch_size, maxlen, dataset, keys, maxcharlen, args, frame_size)
+        yield [epoch, batch, samples, lengths, picked_keys, cseq, clen]
 
 def _valid_keys(keys, args):
     keys = [k for k in keys if not (k[-1] == '-' or k[0] == '(')]
@@ -108,7 +107,7 @@ def conditional_dataloader(batch_size, args, maxlen=None, frame_size=None):
     dataloader_val = _conditional_dataloader(
             batch_size, dataset, maxlen, keys[n_train_keys:], args, frame_size)
 
-    return dataset, maxlen, dataloader, dataloader_val
+    return dataset, maxlen, dataloader, dataloader_val, keys[:n_train_keys], keys[n_train_keys:]
 
 def dataloader(batch_size, args, maxlen=None, frame_size=None):
     # Returns a generator which returns
