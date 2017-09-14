@@ -300,7 +300,7 @@ class Discriminator(NN.Module):
         x = cnn_output
         x = x.permute(0, 2, 1)
         #x = x.view(32, nframes_max, frame_size)
-        x = T.cat([x, c], 2).permute(1, 0, 2)
+        x = T.cat([x, c], 1).permute(1, 0, 2)
         lstm_out, (lstm_h, lstm_c) = dynamic_rnn(self.rnn, x, nframes, initial_state)
         lstm_out = lstm_out.permute(1, 0, 2)
         max_nframes = lstm_out.size()[1]
