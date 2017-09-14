@@ -324,7 +324,7 @@ class Discriminator(NN.Module):
 
         conv_out = lstm_out.view(batch_size * max_nframes, state_size)
         res_out = self.residual_net(conv_out)
-        classifier_out = self.classifier(res_out).view(batch_size, nframes_max)
+        classifier_out = self.classifier(res_out).view(batch_size, max_nframes)
         
         return classifier_out, cnn_outputs
 
