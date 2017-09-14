@@ -20,6 +20,7 @@ import dataset
 
 import matplotlib
 from librosa import feature
+from mailbox import _create_carefully
 matplotlib.use('Agg')
 import matplotlib.pyplot as PL
 
@@ -256,7 +257,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[9, 5, 100],[9, 5, 100],[3, 2, 100],[3,2,100]]):
+                 cnn_struct = [[9, 5, 64],[9, 5, 64],[3, 2, 64],[3,2,64]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -302,7 +303,6 @@ class Discriminator(NN.Module):
         max_nframes = div_roundup(maxlen, frame_size)
         nframes = div_roundup(length, frame_size)
         nframes_max = tonumpy(nframes).max()
-        c = c.unsqueeze(1).expand(batch_size, nframes_max, embed_size)
         xold = x[:, :nframes_max * frame_size]
 
         initial_state = (
@@ -317,6 +317,8 @@ class Discriminator(NN.Module):
         x = cnn_output
         x = x.permute(0, 2, 1)
         #x = x.view(32, nframes_max, frame_size)
+        max_nframes = x.size()[1]
+        c = c.unsqueeze(1).expand(batch_size, max_nframes, embed_size)
         x2 = T.cat([x, c], 2)
         lstm_out, (lstm_h, lstm_c) = dynamic_rnn(self.rnn, x2, nframes, initial_state)
         lstm_out = lstm_out.permute(1, 0, 2)
@@ -327,7 +329,6 @@ class Discriminator(NN.Module):
         classifier_out = self.classifier(res_out).view(batch_size, max_nframes)
         
         return classifier_out, cnn_outputs
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=100, type=int)
