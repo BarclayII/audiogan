@@ -118,6 +118,17 @@ def clip_grad(params, clip_norm):
     return norm
 
 
+class Residual(NN.Module):
+    def __init__(self,size):
+        NN.Module.__init__(self)
+        self.size = size
+        self.linear = NN.Linear(size, size)
+        self.relu = NN.LeakyReLU()
+
+    def forward(self, x):
+        return self.relu(self.linear(x))
+
+
 class Embedder(NN.Module):
     def __init__(self,
                  output_size=100,
@@ -245,7 +256,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[9, 5, 100],[9, 5, 100],[3, 2, 100],[3,2,100],[3,2,100]]):
+                 cnn_struct = [[9, 5, 100],[9, 5, 100],[3, 2, 100],[3,2,100]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -270,6 +281,12 @@ class Discriminator(NN.Module):
                 num_layers,
                 bidirectional=True,
                 )
+        self.residual_net = NN.Sequential(
+                Residual(state_size),
+                Residual(state_size),
+                Residual(state_size),
+                Residual(state_size)
+            )
         self.classifier = NN.Sequential(
                 NN.Linear(state_size, state_size // 2),
                 NN.LeakyReLU(),
@@ -300,15 +317,15 @@ class Discriminator(NN.Module):
         x = cnn_output
         x = x.permute(0, 2, 1)
         #x = x.view(32, nframes_max, frame_size)
-        x = T.cat([x, c], 1).permute(1, 0, 2)
-        lstm_out, (lstm_h, lstm_c) = dynamic_rnn(self.rnn, x, nframes, initial_state)
+        x2 = T.cat([x, c], 2)
+        lstm_out, (lstm_h, lstm_c) = dynamic_rnn(self.rnn, x2, nframes, initial_state)
         lstm_out = lstm_out.permute(1, 0, 2)
         max_nframes = lstm_out.size()[1]
 
-        classifier_in = lstm_out.view(batch_size * nframes_max, state_size)
-
-        classifier_out = self.classifier(classifier_in).view(batch_size, nframes_max)
-
+        conv_out = lstm_out.view(batch_size * nframes_max, state_size)
+        res_out = self.residual_net(conv_out)
+        classifier_out = self.classifier(res_out).view(batch_size, nframes_max)
+        
         return classifier_out, cnn_outputs
 
 
