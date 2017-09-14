@@ -246,7 +246,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[9, 5, 100],[9, 5, 100],[3, 2, 100],[3,2,100]]):
+                 cnn_struct = [[9, 5, 100],[9, 5, 100],[3, 2, 100],[3,2,100],[3,2,100]]):
         NN.Module.__init__(self)
         self._frame_size = frame_size
         self._state_size = state_size
@@ -256,16 +256,17 @@ class Discriminator(NN.Module):
         
         self.cnn = NN.ModuleList()
         infilters = 1
-        for layer in cnn_struct:
-            
+        for idx, layer in enumerate(cnn_struct):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
+            if idx == len(cnn_struct) - 1:
+                outfilters = frame_size
             
             self.cnn.append(Conv1d(in_channels = infilters, out_channels = outfilters, 
                                    kernel_size = kernel, stride = stride, padding = (kernel - 1) //2).cuda())
 
             infilters = outfilters
-            frame_size /= stride
-        frame_size *= outfilters
+            #frame_size /= stride
+        #frame_size *= outfilters
         self.frame_size = frame_size
         self.rnn = NN.LSTM(
                 frame_size + embed_size,
@@ -303,7 +304,8 @@ class Discriminator(NN.Module):
             cnn_output = F.leaky_relu(cnn_layer(cnn_output))
             cnn_outputs.append(cnn_output)
         x = cnn_output
-        x = x.view(32, nframes_max, frame_size)
+        x = x.permute(0, 2, 1)
+        #x = x.view(32, nframes_max, frame_size)
         x = T.cat([x, c], 2).permute(1, 0, 2)
         lstm_out, (lstm_h, lstm_c) = dynamic_rnn(self.rnn, x, nframes, initial_state)
         lstm_out = lstm_out.permute(1, 0, 2)
