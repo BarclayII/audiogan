@@ -126,7 +126,7 @@ class Residual(NN.Module):
         self.relu = NN.LeakyReLU()
 
     def forward(self, x):
-        return self.relu(self.linear(x))
+        return self.relu(self.linear(x) + x)
 
 
 class Embedder(NN.Module):
@@ -322,7 +322,7 @@ class Discriminator(NN.Module):
         lstm_out = lstm_out.permute(1, 0, 2)
         max_nframes = lstm_out.size()[1]
 
-        conv_out = lstm_out.view(batch_size * nframes_max, state_size)
+        conv_out = lstm_out.view(batch_size * max_nframes, state_size)
         res_out = self.residual_net(conv_out)
         classifier_out = self.classifier(res_out).view(batch_size, nframes_max)
         
