@@ -281,7 +281,7 @@ class Discriminator(NN.Module):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=5, type=int)
+parser.add_argument('--critic_iter', default=100, type=int)
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
@@ -291,7 +291,7 @@ parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=0.1)
-parser.add_argument('--dlr', type=float, default=1e-5)
+parser.add_argument('--dlr', type=float, default=1e-4)
 parser.add_argument('--glr', type=float, default=1e-4)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
