@@ -242,13 +242,11 @@ class Generator(NN.Module):
 
 class Discriminator(NN.Module):
     def __init__(self,
-                 frame_size=200,
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
                  cnn_struct = [[9, 5, 100],[9, 5, 100],[3, 2, 100],[3,2,100],[3,2,100]]):
         NN.Module.__init__(self)
-        self._frame_size = frame_size
         self._state_size = state_size
         self._embed_size = embed_size
         self._num_layers = num_layers
@@ -258,16 +256,14 @@ class Discriminator(NN.Module):
         infilters = 1
         for idx, layer in enumerate(cnn_struct):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
-            if idx == len(cnn_struct) - 1:
-                outfilters = frame_size
             
             self.cnn.append(Conv1d(in_channels = infilters, out_channels = outfilters, 
                                    kernel_size = kernel, stride = stride, padding = (kernel - 1) //2).cuda())
 
             infilters = outfilters
-            #frame_size /= stride
-        #frame_size *= outfilters
+        frame_size = outfilters
         self.frame_size = frame_size
+        self._frame_size = frame_size
         self.rnn = NN.LSTM(
                 frame_size + embed_size,
                 state_size // 2,
@@ -279,8 +275,6 @@ class Discriminator(NN.Module):
                 NN.LeakyReLU(),
                 NN.Linear(state_size // 2, 1),
                 )
-        #variable dropout not yet used
-        #self.dropout = NN.Dropout(p=0.8)
 
     def forward(self, x, length, c, percent_used = 0.1):
         frame_size = self._frame_size
@@ -395,7 +389,6 @@ e_g = Embedder(args.embedsize).cuda()
 e_d = Embedder(args.embedsize).cuda()
 
 d = Discriminator(
-        frame_size=args.framesize,
         state_size=args.dstatesize,
         embed_size=args.embedsize,
         num_layers=args.rnnd_layers,
