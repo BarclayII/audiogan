@@ -353,6 +353,7 @@ parser.add_argument('--dataset', type=str, default='dataset.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=40000, help='maximum sample length (0 for unlimited)')
+parser.add_argument('--noisescale', type=float, default=0.1)
 
 args = parser.parse_args()
 args.conditional = True
@@ -489,7 +490,7 @@ if __name__ == '__main__':
                         batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
 
             with Timer.new('train_d', print_=False):
-                noise = tovar(RNG.randn(*real_data.shape))
+                noise = tovar(RNG.randn(*real_data.shape) * args.noisescale)
                 real_data = tovar(real_data) + noise
                 real_len = tovar(real_len).long()
                 cs = tovar(cs).long()
@@ -512,7 +513,7 @@ if __name__ == '__main__':
                 embed_g = e_g(cs2, cl2)
                 embed_d = e_d(cs2, cl2)
                 fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
-                noise = tovar(T.randn(*fake_data.size()))
+                noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 cls_g, _ = d(fake_data + noise, fake_len, embed_d)
 
                 target = tovar(T.zeros(*(cls_g.size())))
@@ -567,7 +568,7 @@ if __name__ == '__main__':
             embed_g = e_g(cs, cl)
             embed_d = e_d(cs, cl)
             fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
-            noise = tovar(T.randn(*fake_data.size()))
+            noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
             fake_data += noise
             
             cls_g, hidden_states_g = d(fake_data, fake_len, embed_d)
