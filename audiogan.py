@@ -442,6 +442,7 @@ parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=40000, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.1)
+parser.add_argument('--g_optim', default = 'boundary_seeking')
 
 args = parser.parse_args()
 args.conditional = True
@@ -673,10 +674,18 @@ if __name__ == '__main__':
             #penalizing z-scores of gen from real distribution
             for r, f in zip(dists_d, dists_g):
                 feature_penalty += T.pow((r[0]-f[0])/r[1],2).mean()/batch_size
-            target = tovar(T.ones(*(cls_g.size())))
+
+            if args.g_optim == 'boundary_seeking':
+                target = tovar(T.ones(*(cls_g.size())) * 0.5)
+            else:
+                target = tovar(T.zeros(*(cls_g.size())))            
             weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
             loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
-
+            
+            for individual_l in loss:
+                individual_l.backward()
+                fake_data.grad
+            
             reward = -loss.data
             baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
             d_train_writer.add_summary(
