@@ -1,4 +1,6 @@
 
+from torch.nn import Parameter
+from functools import wraps
 
 import torch as T
 import torch.nn as NN
@@ -26,6 +28,91 @@ import matplotlib.pyplot as PL
 
 from PIL import Image
 import librosa
+
+
+## Weight norm is now added to pytorch as a pre-hook, so use that instead :)
+
+
+class WeightNorm(NN.Module):
+    append_g = '_g'
+    append_v = '_v'
+
+    def __init__(self, module, weights):
+        super(WeightNorm, self).__init__()
+        self.module = module
+        self.weights = weights
+        self._reset()
+
+    def _reset(self):
+        for name_w in self.weights:
+            w = getattr(self.module, name_w)
+
+            # construct g,v such that w = g/||v|| * v
+            g = T.norm(w)
+            v = w/g.expand_as(w)
+            g = Parameter(g.data)
+            v = Parameter(v.data)
+            name_g = name_w + self.append_g
+            name_v = name_w + self.append_v
+
+            # remove w from parameter list
+            del self.module._parameters[name_w]
+
+            # add g and v as new parameters
+            self.module.register_parameter(name_g, g)
+            self.module.register_parameter(name_v, v)
+
+    def _setweights(self):
+        for name_w in self.weights:
+            name_g = name_w + self.append_g
+            name_v = name_w + self.append_v
+            g = getattr(self.module, name_g)
+            v = getattr(self.module, name_v)
+            w = v*(g/T.norm(v)).expand_as(v)
+            setattr(self.module, name_w, w)
+
+    def forward(self, *args):
+        self._setweights()
+        return self.module.forward(*args)
+
+##############################################################
+## An older version using a python decorator but might be buggy.
+## Does not work when the module is replicated (e.g. NN.DataParallel)
+
+def _decorate(forward, module, name, name_g, name_v):
+    @wraps(forward)
+    def decorated_forward(*args, **kwargs):
+        g = module.__getattr__(name_g)
+        v = module.__getattr__(name_v)
+        w = v*(g/T.norm(v)).expand_as(v)
+        module.__setattr__(name, w)
+        return forward(*args, **kwargs)
+    return decorated_forward
+
+def weight_norm(module, name):
+    param = module.__getattr__(name)
+
+    # construct g,v such that w = g/||v|| * v
+    g = T.norm(param)
+    v = param/g.expand_as(param)
+    g = Parameter(g.data)
+    v = Parameter(v.data)
+    name_g = name + '_g'
+    name_v = name + '_v'
+
+    # remove w from parameter list
+    del module._parameters[name]
+
+    # add g and v as new parameters
+    module.register_parameter(name_g, g)
+    module.register_parameter(name_v, v)
+
+    # construct w every time before forward is called
+    module.forward = _decorate(module.forward, module, name, name_g, name_v)
+    return module
+
+
+
 
 def tovar(*arrs):
     tensors = [(T.Tensor(a.astype('float32')) if isinstance(a, NP.ndarray) else a).cuda() for a in arrs]
@@ -190,11 +277,12 @@ class Generator(NN.Module):
         self._num_layers = num_layers
 
         self.rnn = NN.ModuleList()
-        self.rnn.append(NN.LSTMCell(frame_size + embed_size + noise_size, state_size))
+        self.rnn.append(WeightNorm(NN.LSTMCell(frame_size + embed_size + noise_size, state_size), 
+                                   ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih']))
         for _ in range(1, num_layers):
-            self.rnn.append(NN.LSTMCell(state_size, state_size))
-        self.proj = NN.Linear(state_size, frame_size)
-        self.stopper = NN.Linear(state_size, 1)
+            self.rnn.append(WeightNorm(NN.LSTMCell(state_size, state_size), ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih']))
+        self.proj = WeightNorm(NN.Linear(state_size, frame_size), ['weight', 'bias'])
+        self.stopper = WeightNorm(NN.Linear(state_size, 1), ['weight', 'bias'])
 
     def forward(self, batch_size=None, length=None, z=None, c=None):
         frame_size = self._frame_size
@@ -257,7 +345,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[9, 5, 64],[9, 5, 64],[3, 2, 64],[3,2,64]]):
+                 cnn_struct = [[9, 5, 128],[9, 5, 128],[3, 2, 128],[3,2,128]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
