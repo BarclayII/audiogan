@@ -354,6 +354,7 @@ parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=40000, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.1)
+parser.add_argument('--require_acc', type=float, default=0.8)
 
 args = parser.parse_args()
 args.conditional = True
@@ -553,7 +554,7 @@ if __name__ == '__main__':
 
             print 'D', epoch, batch_id, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
 
-            if acc_d > 0.5 and acc_g > 0.5:
+            if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
 
         gen_iter += 1
