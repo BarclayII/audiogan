@@ -590,7 +590,9 @@ if __name__ == '__main__':
                 embed_d = e_d(cs2, cl2)
                 fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-                cls_g, _, nframes_g = d(fake_data + noise, fake_len, embed_d)
+                fake_data = tovar((fake_data + noise).data)
+                fake_data.requires_grad = True
+                cls_g, _, nframes_g = d(fake_data, fake_len, embed_d)
 
                 target = tovar(T.zeros(*(cls_g.size())))
                 weight = length_mask(cls_g.size(), nframes_g)
@@ -598,10 +600,10 @@ if __name__ == '__main__':
                 loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
 
                 # Check gradient w.r.t. generated output occasionally
-                if dis_iter % 100 == 0:
-                    grad = T.autograd.grad(loss_g, fake_data, grad_outputs=T.ones(loss_g.size()), create_graph=True, retain_graph=False, only_inputs=True)[0]
+                if dis_iter % 5 == 0:
+                    grad = T.autograd.grad(loss_g, fake_data, grad_outputs=T.ones(loss_g.size()).cuda(), create_graph=True, retain_graph=True, only_inputs=True)[0]
                     norm = grad.norm(2, 1) ** 2
-                    norm = (norm / nframes_g).data
+                    norm = (norm / nframes_g.float()).data
                     x_grad_norm = norm.mean()
                     d_train_writer.add_summary(
                             TF.Summary(value=[TF.Summary.Value(tag='x_grad_norm', simple_value=x_grad_norm)]),
@@ -667,7 +669,7 @@ if __name__ == '__main__':
             #dists are (object, std) pairs.
             #penalizing z-scores of gen from real distribution
             for r, f in zip(dists_d, dists_g):
-                feature_penalty += T.pow(r[0]-f[0], 2).mean() / batch_size
+                feature_penalty += T.pow((r[0]-f[0])/r[1],2).mean() / batch_size
 
             if args.g_optim == 'boundary_seeking':
                 target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
