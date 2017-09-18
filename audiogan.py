@@ -669,7 +669,7 @@ if __name__ == '__main__':
             #dists are (object, std) pairs.
             #penalizing z-scores of gen from real distribution
             for r, f in zip(dists_d, dists_g):
-                feature_penalty += T.pow((r[0]-f[0])/r[1],2).mean() / batch_size
+                feature_penalty += T.pow((r[0]-f[0]),2).mean() / batch_size
 
             if args.g_optim == 'boundary_seeking':
                 target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
@@ -694,6 +694,7 @@ if __name__ == '__main__':
                     )
             reward = (reward - baseline).unsqueeze(1) * weight_r.data
 
+            '''
             fp_raw = tonumpy(feature_penalty)
             if fp_raw  * lambda_fp > 100:
                 lambda_fp *= .2
@@ -701,6 +702,7 @@ if __name__ == '__main__':
                 lambda_fp *= .9
             if fp_raw  * lambda_fp < 1:
                 lambda_fp *= 1.1
+            '''
 
             _loss = loss.mean()
             loss = _loss + feature_penalty * lambda_fp
