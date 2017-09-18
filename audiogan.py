@@ -6,8 +6,8 @@ import torch as T
 import torch.nn as NN
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from torch.nn.utils import weight_norm as torch_weight_norm
 
-from torch.nn import Conv1d
 import numpy as NP
 import numpy.random as RNG
 import tensorflow as TF     # for Tensorboard
@@ -31,8 +31,6 @@ import librosa
 
 
 ## Weight norm is now added to pytorch as a pre-hook, so use that instead :)
-
-
 class WeightNorm(NN.Module):
     append_g = '_g'
     append_v = '_v'
@@ -75,44 +73,22 @@ class WeightNorm(NN.Module):
         self._setweights()
         return self.module.forward(*args)
 
-##############################################################
-## An older version using a python decorator but might be buggy.
-## Does not work when the module is replicated (e.g. NN.DataParallel)
+def weight_norm(m, names):
+    for name in names:
+        m = torch_weight_norm(m, name)
+    return m
 
-def _decorate(forward, module, name, name_g, name_v):
-    @wraps(forward)
-    def decorated_forward(*args, **kwargs):
-        g = module.__getattr__(name_g)
-        v = module.__getattr__(name_v)
-        w = v*(g/T.norm(v)).expand_as(v)
-        module.__setattr__(name, w)
-        return forward(*args, **kwargs)
-    return decorated_forward
+class LayerNorm(NN.Module):
+    def __init__(self, features, eps=1e-6):
+        NN.Module.__init__(self)
+        self.gamma = NN.Parameter(T.ones(features))
+        self.beta = NN.Parameter(T.zeros(features))
+        self.eps = eps
 
-def weight_norm(module, name):
-    param = module.__getattr__(name)
-
-    # construct g,v such that w = g/||v|| * v
-    g = T.norm(param)
-    v = param/g.expand_as(param)
-    g = Parameter(g.data)
-    v = Parameter(v.data)
-    name_g = name + '_g'
-    name_v = name + '_v'
-
-    # remove w from parameter list
-    del module._parameters[name]
-
-    # add g and v as new parameters
-    module.register_parameter(name_g, g)
-    module.register_parameter(name_v, v)
-
-    # construct w every time before forward is called
-    module.forward = _decorate(module.forward, module, name, name_g, name_v)
-    return module
-
-
-
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        std = x.std(-1, keepdim=True)
+        return self.gamma * (x - mean) / (std + self.eps) + self.beta
 
 def tovar(*arrs):
     tensors = [(T.Tensor(a.astype('float32')) if isinstance(a, NP.ndarray) else a).cuda() for a in arrs]
@@ -158,6 +134,7 @@ def advanced_index(t, dim, index):
 
 
 def length_mask(size, length):
+    length = tonumpy(length)
     batch_size = size[0]
     weight = T.zeros(*size)
     for i in range(batch_size):
@@ -229,7 +206,7 @@ class Embedder(NN.Module):
         self._char_embed_size = char_embed_size
         self._num_layers = num_layers
 
-        self.embed = NN.Embedding(num_chars, char_embed_size)
+        self.embed = NN.DataParallel(NN.Embedding(num_chars, char_embed_size))
         self.rnn = NN.LSTM(
                 char_embed_size,
                 output_size // 2,
@@ -252,6 +229,8 @@ class Embedder(NN.Module):
         return h[:, -2:].view(batch_size, output_size)
 
 def calc_dists(hidden_states):
+    means_d = []
+    stds_d = []
     for h in hidden_states:
         m = h.mean(2)
         s = h.std(2)
@@ -277,12 +256,17 @@ class Generator(NN.Module):
         self._num_layers = num_layers
 
         self.rnn = NN.ModuleList()
-        self.rnn.append(WeightNorm(NN.LSTMCell(frame_size + embed_size + noise_size, state_size), 
-                                   ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih']))
+        self.rnn.append(
+                NN.DataParallel(weight_norm(
+                    NN.LSTMCell(frame_size + embed_size + noise_size, state_size), 
+                    ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih'])))
         for _ in range(1, num_layers):
-            self.rnn.append(WeightNorm(NN.LSTMCell(state_size, state_size), ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih']))
-        self.proj = WeightNorm(NN.Linear(state_size, frame_size), ['weight', 'bias'])
-        self.stopper = WeightNorm(NN.Linear(state_size, 1), ['weight', 'bias'])
+            self.rnn.append(
+                    NN.DataParallel(weight_norm(
+                        NN.LSTMCell(state_size, state_size),
+                        ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih'])))
+        self.proj = NN.DataParallel(weight_norm(NN.Linear(state_size, frame_size), ['weight', 'bias']))
+        self.stopper = NN.DataParallel(weight_norm(NN.Linear(state_size, 1), ['weight', 'bias']))
 
     def forward(self, batch_size=None, length=None, z=None, c=None):
         frame_size = self._frame_size
@@ -345,7 +329,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[9, 5, 128],[9, 5, 128],[3, 2, 128],[3,2,128]]):
+                 cnn_struct = [[9, 5, 128],[9, 5, 128],[3, 4, 128],[3,4,128]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -353,12 +337,13 @@ class Discriminator(NN.Module):
         self._cnn_struct = cnn_struct
         
         self.cnn = NN.ModuleList()
+        self.cnn_struct = cnn_struct
         infilters = 1
         for idx, layer in enumerate(cnn_struct):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
-            
-            self.cnn.append(Conv1d(in_channels = infilters, out_channels = outfilters, 
-                                   kernel_size = kernel, stride = stride, padding = (kernel - 1) //2).cuda())
+
+            conv = NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2)
+            self.cnn.append(NN.DataParallel(conv))
 
             infilters = outfilters
         frame_size = outfilters
@@ -370,17 +355,17 @@ class Discriminator(NN.Module):
                 num_layers,
                 bidirectional=True,
                 )
-        self.residual_net = NN.Sequential(
+        self.residual_net = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
                 Residual(state_size),
                 Residual(state_size),
                 Residual(state_size)
-            )
-        self.classifier = NN.Sequential(
+            ))
+        self.classifier = NN.DataParallel(NN.Sequential(
                 NN.Linear(state_size, state_size // 2),
                 NN.LeakyReLU(),
                 NN.Linear(state_size // 2, 1),
-                )
+                ))
 
     def forward(self, x, length, c, percent_used = 0.1):
         frame_size = self._frame_size
@@ -388,10 +373,13 @@ class Discriminator(NN.Module):
         num_layers = self._num_layers
         embed_size = self._embed_size
         batch_size, maxlen = x.size()
-        max_nframes = div_roundup(maxlen, frame_size)
-        nframes = div_roundup(length, frame_size)
+
+        nframes = length
+        for cnn_config in self.cnn_struct:
+            kernel, stride, outfilters = cnn_config
+            nframes = (nframes + stride - 1) / stride
         nframes_max = tonumpy(nframes).max()
-        xold = x[:, :nframes_max * frame_size]
+        xold = x
 
         initial_state = (
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
@@ -416,7 +404,7 @@ class Discriminator(NN.Module):
         res_out = self.residual_net(conv_out)
         classifier_out = self.classifier(res_out).view(batch_size, max_nframes)
         
-        return classifier_out, cnn_outputs
+        return classifier_out, cnn_outputs, nframes
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=100, type=int)
@@ -443,14 +431,14 @@ parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=40000, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.1)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
-parser.add_argument('--require_acc', type=float, default=0.8)
+parser.add_argument('--require_acc', type=float, default=0.5)
 
 args = parser.parse_args()
 args.conditional = True
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-lambda_fp = 1
+lambda_fp = 0.1
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
     modelnameload = None
@@ -587,13 +575,11 @@ if __name__ == '__main__':
                 cl = tovar(cl).long()
 
                 embed_d = e_d(cs, cl)
-                cls_d, hidden_states_d = d(real_data, real_len, embed_d)
-                means_d = []
-                stds_d = []
+                cls_d, hidden_states_d, nframes_d = d(real_data, real_len, embed_d)
                 dists_d = calc_dists(hidden_states_d)
                 target = tovar(T.ones(*(cls_d.size())) * 0.9)
-                weight = length_mask(cls_d.size(), div_roundup(real_len.data, args.framesize))
-                loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / (real_len.float() / args.framesize)
+                weight = length_mask(cls_d.size(), nframes_d)
+                loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / nframes_d.float()
                 loss_d = loss_d.mean()
                 correct_d = ((cls_d.data > 0).float() * weight.data).sum()
                 num_d = weight.data.sum()
@@ -604,12 +590,23 @@ if __name__ == '__main__':
                 embed_d = e_d(cs2, cl2)
                 fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-                cls_g, _ = d(fake_data + noise, fake_len, embed_d)
+                cls_g, _, nframes_g = d(fake_data + noise, fake_len, embed_d)
 
                 target = tovar(T.zeros(*(cls_g.size())))
-                weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
+                weight = length_mask(cls_g.size(), nframes_g)
                 #feature_penalty = [T.pow(r - f,2).mean() for r, f in zip(dists_d, dists_g)]
-                loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
+                loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
+
+                # Check gradient w.r.t. generated output occasionally
+                if dis_iter % 100 == 0:
+                    grad = T.autograd.grad(loss_g, fake_data, grad_outputs=T.ones(loss_g.size()), create_graph=True, retain_graph=False, only_inputs=True)[0]
+                    norm = grad.norm(2, 1) ** 2
+                    norm = (norm / nframes_g).data
+                    x_grad_norm = norm.mean()
+                    d_train_writer.add_summary(
+                            TF.Summary(value=[TF.Summary.Value(tag='x_grad_norm', simple_value=x_grad_norm)]),
+                            dis_iter)
+
                 loss_g = loss_g.mean()
                 correct_g = ((cls_g.data < 0).float() * weight.data).sum()
                 num_g = weight.data.sum()
@@ -661,32 +658,26 @@ if __name__ == '__main__':
             noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
             fake_data += noise
             
-            cls_g, hidden_states_g = d(fake_data, fake_len, embed_d)
+            cls_g, hidden_states_g, nframes_g = d(fake_data, fake_len, embed_d)
             
-            _, hidden_states_d = d(real_data, real_len, embed_d)
-            means_d = []
-            stds_d = []
+            _, hidden_states_d, nframes_d = d(real_data, real_len, embed_d)
             dists_d = calc_dists(hidden_states_d)
-            
-            
             dists_g = calc_dists(hidden_states_g)
             feature_penalty = 0
             #dists are (object, std) pairs.
             #penalizing z-scores of gen from real distribution
             for r, f in zip(dists_d, dists_g):
-                feature_penalty += T.pow((r[0]-f[0])/r[1],2).mean()/batch_size
+                feature_penalty += T.pow(r[0]-f[0], 2).mean() / batch_size
 
             if args.g_optim == 'boundary_seeking':
-                target = tovar(T.ones(*(cls_g.size())) * 0.5)
+                target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
             else:
                 target = tovar(T.zeros(*(cls_g.size())))            
-            weight = length_mask(cls_g.size(), div_roundup(fake_len.data, args.framesize))
-            loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / (fake_len.float() / args.framesize)
-            
-            for individual_l in loss:
-                individual_l.backward()
-                fake_data.grad
-            
+            weight = length_mask(cls_g.size(), nframes_g)
+            nframes_max = (fake_len / args.framesize).data.max()
+            weight_r = length_mask((batch_size, nframes_max), fake_len / args.framesize)
+            loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
+
             reward = -loss.data
             baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
             d_train_writer.add_summary(
@@ -699,7 +690,8 @@ if __name__ == '__main__':
                         ),
                     gen_iter
                     )
-            reward = (reward - baseline).unsqueeze(1) * weight.data
+            reward = (reward - baseline).unsqueeze(1) * weight_r.data
+
             fp_raw = tonumpy(feature_penalty)
             if fp_raw  * lambda_fp > 100:
                 lambda_fp *= .2
@@ -707,8 +699,9 @@ if __name__ == '__main__':
                 lambda_fp *= .9
             if fp_raw  * lambda_fp < 1:
                 lambda_fp *= 1.1
-            feature_penalty = feature_penalty * lambda_fp
-            loss = loss.mean() + feature_penalty
+
+            _loss = loss.mean()
+            loss = _loss + feature_penalty * lambda_fp
             for i, fake_stop in enumerate(fake_stop_list):
                 fake_stop.reinforce(reward[:, i:i+1])
             opt_g.zero_grad()
@@ -720,6 +713,8 @@ if __name__ == '__main__':
                     TF.Summary(
                         value=[
                             TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
+                            TF.Summary.Value(tag='feature_penalty', simple_value=tonumpy(feature_penalty)[0]),
+                            TF.Summary.Value(tag='lambda_fp', simple_value=lambda_fp),
                             ]
                         ),
                     gen_iter
@@ -743,5 +738,4 @@ if __name__ == '__main__':
                 T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-        loss = loss - feature_penalty
-        print 'G', gen_iter, tonumpy(loss), tonumpy(feature_penalty), Timer.get('train_g')
+        print 'G', gen_iter, tonumpy(_loss), tonumpy(feature_penalty), lambda_fp, Timer.get('train_g')
