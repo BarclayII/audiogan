@@ -600,7 +600,7 @@ if __name__ == '__main__':
                 loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
 
                 # Check gradient w.r.t. generated output occasionally
-                if dis_iter % 5 == 0:
+                if dis_iter % 100 == 0:
                     grad = T.autograd.grad(loss_g, fake_data, grad_outputs=T.ones(loss_g.size()).cuda(), create_graph=True, retain_graph=True, only_inputs=True)[0]
                     norm = grad.norm(2, 1) ** 2
                     norm = (norm / nframes_g.float()).data
@@ -723,7 +723,7 @@ if __name__ == '__main__':
                     )
             opt_g.step()
 
-        if gen_iter % 50 == 0:
+        if gen_iter % 20 == 0:
             embed_g = e_g(cseq_fixed, clen_fixed)
             fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
             fake_data, fake_len = tonumpy(fake_data, fake_len)
