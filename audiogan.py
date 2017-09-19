@@ -175,11 +175,13 @@ def check_grad(params):
 def clip_grad(params, clip_norm):
     if clip_norm == 0:
         return
-    norm = sum(T.norm(p.grad.data) for p in params if p.grad is not None)
-    if norm > clip_norm:
-        for p in params:
-            if p.grad is not None:
-                p.grad.data /= (norm / clip_norm)
+    norm = 0
+    for p in params:
+        if p.grad is not None:
+            _norm = T.norm(p.grad.data)
+            norm += _norm
+            if _norm > clip_norm:
+                p.grad.data /= (_norm / clip_norm)
     return norm
 
 
@@ -330,7 +332,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[9, 5, 128],[9, 5, 128],[9, 4, 128],[9,4,128]]):
+                 cnn_struct = [[5, 2, 64], [5, 2, 64], [5, 2, 128], [5, 2, 128], [5, 2, 256], [5, 2, 256]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -439,7 +441,7 @@ args.conditional = True
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-lambda_fp = 0.1
+lambda_fp = 1
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
     modelnameload = None
@@ -673,7 +675,7 @@ if __name__ == '__main__':
             #penalizing z-scores of gen from real distribution
             #Note that the model could not do anything to r[1] by optimizing G.
             for r, f in zip(dists_d, dists_g):
-                feature_penalty += T.pow((r[0] - f[0]) / (r[1] + 1e-6), 2).mean() / batch_size
+                feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
 
             if args.g_optim == 'boundary_seeking':
                 target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
@@ -710,6 +712,7 @@ if __name__ == '__main__':
 
             _loss = loss.mean()
             loss = _loss + feature_penalty * lambda_fp
+            #loss = _loss
             for i, fake_stop in enumerate(fake_stop_list):
                 fake_stop.reinforce(reward[:, i:i+1])
             opt_g.zero_grad()
