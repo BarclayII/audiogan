@@ -329,7 +329,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[9, 5, 128],[9, 5, 128],[3, 4, 128],[3,4,128]]):
+                 cnn_struct = [[9, 5, 128],[9, 5, 128],[9, 4, 128],[9,4,128]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -600,14 +600,13 @@ if __name__ == '__main__':
                 loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
 
                 # Check gradient w.r.t. generated output occasionally
-                if dis_iter % 100 == 0:
-                    grad = T.autograd.grad(loss_g, fake_data, grad_outputs=T.ones(loss_g.size()).cuda(), create_graph=True, retain_graph=True, only_inputs=True)[0]
-                    norm = grad.norm(2, 1) ** 2
-                    norm = (norm / nframes_g.float()).data
-                    x_grad_norm = norm.mean()
-                    d_train_writer.add_summary(
-                            TF.Summary(value=[TF.Summary.Value(tag='x_grad_norm', simple_value=x_grad_norm)]),
-                            dis_iter)
+                grad = T.autograd.grad(loss_g, fake_data, grad_outputs=T.ones(loss_g.size()).cuda(), create_graph=True, retain_graph=True, only_inputs=True)[0]
+                norm = grad.norm(2, 1) ** 2
+                norm = (norm / nframes_g.float()).data
+                x_grad_norm = norm.mean()
+                d_train_writer.add_summary(
+                        TF.Summary(value=[TF.Summary.Value(tag='x_grad_norm', simple_value=x_grad_norm)]),
+                        dis_iter)
 
                 loss_g = loss_g.mean()
                 correct_g = ((cls_g.data < 0).float() * weight.data).sum()
@@ -669,7 +668,7 @@ if __name__ == '__main__':
             #dists are (object, std) pairs.
             #penalizing z-scores of gen from real distribution
             for r, f in zip(dists_d, dists_g):
-                feature_penalty += T.pow((r[0] - f[0]) / r[1], 2).mean() / batch_size
+                feature_penalty += T.pow((r[0] - f[0]) / (r[1] + 1e-6), 2).mean() / batch_size
 
             if args.g_optim == 'boundary_seeking':
                 target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
