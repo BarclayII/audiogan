@@ -187,7 +187,7 @@ class Residual(NN.Module):
     def __init__(self,size):
         NN.Module.__init__(self)
         self.size = size
-        self.linear = NN.Linear(size, size)
+        self.linear = weight_norm(NN.Linear(size, size), ['weight','bias'])
         self.relu = NN.LeakyReLU()
 
     def forward(self, x):
@@ -198,14 +198,16 @@ class dense_res_bottleneck(NN.Module):
         NN.Module.__init__(self)
         self.infilters = infilters
         self.outfilters = outfilters
-        self.conv = NN.Conv1d(infilters, hidden_filters, kernel_size = kernel, stride=stride, padding=(kernel - 1) // 2)
-        self.deconv = NN.ConvTranspose1d(hidden_filters, outfilters, kernel, stride, padding=0)
+        self.conv = weight_norm(
+            NN.Conv1d(infilters, hidden_filters, kernel_size = kernel, stride=stride, padding=(kernel - 1) // 2),
+            ['weight','bias'])
+        self.deconv = weight_norm(
+            NN.ConvTranspose1d(hidden_filters, outfilters, kernel-1, stride, padding=stride//2),
+            ['weight','bias'])
         self.relu = NN.LeakyReLU()
     def forward(self, x):
-        x_len = x.size()[-1]
         act = self.relu(self.conv(x))
-        # I have to do this weird hack and cut off a few values cus i couldnt get it to deconv evenly
-        act = self.deconv(act)[:,:,:x_len] 
+        act = self.deconv(act)
         if self.infilters >= self.outfilters:
             act += x[:,-self.outfilters:,:]
         return self.relu(act)
@@ -318,7 +320,8 @@ class Generator(NN.Module):
         kernel=3
         self.dense_res_gen.append(
             NN.DataParallel(
-                NN.Conv1d(infilters, 1, kernel_size=kernel, stride=1, padding=(kernel - 1) // 2)))
+                weight_norm(NN.Conv1d(infilters, 1, kernel_size=kernel, stride=1, padding=(kernel - 1) // 2),
+                ['weight','bias'])))
         
         self.proj = NN.DataParallel(weight_norm(NN.Linear(state_size, frame_size), ['weight', 'bias']))
         self.stopper = NN.DataParallel(weight_norm(NN.Linear(state_size, 1), ['weight', 'bias']))
@@ -400,7 +403,9 @@ class Discriminator(NN.Module):
         for idx, layer in enumerate(cnn_struct):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
 
-            conv = NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2)
+            conv = weight_norm(
+                NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2),
+                ['weight','bias'])
             self.cnn.append(NN.DataParallel(conv))
 
             infilters = outfilters
@@ -420,9 +425,9 @@ class Discriminator(NN.Module):
                 Residual(state_size)
             ))
         self.classifier = NN.DataParallel(NN.Sequential(
-                NN.Linear(state_size, state_size // 2),
+                weight_norm(NN.Linear(state_size, state_size // 2),['weight','bias']),
                 NN.LeakyReLU(),
-                NN.Linear(state_size // 2, 1),
+                weight_norm(NN.Linear(state_size // 2, 1),['weight','bias'])
                 ))
 
     def forward(self, x, length, c, percent_used = 0.1):
