@@ -192,6 +192,39 @@ class Residual(NN.Module):
 
     def forward(self, x):
         return self.relu(self.linear(x) + x)
+#
+class dense_res_bottleneck(NN.Module):
+    def __init__(self,kernel,stride,infilters,hidden_filters,outfilters):
+        NN.Module.__init__(self)
+        self.infilters = infilters
+        self.outfilters = outfilters
+        self.conv = NN.Conv1d(infilters, hidden_filters, kernel_size = kernel, stride=stride, padding=(kernel - 1) // 2)
+        self.deconv = NN.ConvTranspose1d(hidden_filters, outfilters, kernel, stride, padding=0)
+        self.relu = NN.LeakyReLU()
+    def forward(self, x):
+        x_len = x.size()[-1]
+        act = self.relu(self.conv(x))
+        # I have to do this weird hack and cut off a few values cus i couldnt get it to deconv evenly
+        act = self.deconv(act)[:,:,:x_len] 
+        if self.infilters >= self.outfilters:
+            act += x[:,-self.outfilters:,:]
+        return self.relu(act)
+
+
+class dense_res(NN.Module):
+    def __init__(self,kernel,infilters,outfilters):
+        NN.Module.__init__(self)
+        self.infilters = infilters
+        self.outfilters = outfilters
+        self.conv = NN.Conv1d(infilters, outfilters, kernel_size = kernel, stride=1, padding=(kernel - 1) // 2)
+        self.relu = NN.LeakyReLU()
+
+    def forward(self, x):
+        if self.infilters < self.outfilters:
+            act = self.conv(x)
+        else:
+            act = self.conv(x) + x[:,-self.outfilters:,:]
+        return act
 
 
 class Embedder(NN.Module):
@@ -247,6 +280,7 @@ class Generator(NN.Module):
                  noise_size=100,
                  state_size=1024,
                  num_layers=1,
+                 struct = [[9, 4, 100, 16],[9, 4, 100, 16],[9, 4, 100, 16],[9, 4, 100, 16]]
                  ):
         NN.Module.__init__(self)
         self._frame_size = frame_size
@@ -265,6 +299,27 @@ class Generator(NN.Module):
                     NN.DataParallel(weight_norm(
                         NN.LSTMCell(state_size, state_size),
                         ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih'])))
+        self.dense_res_gen = NN.ModuleList()
+        infilters = 1
+        for layer in struct:
+            kernel, stride, hidden_filters, outfilters = layer[0], layer[1], layer[2], layer[3]
+            self.dense_res_gen.append(
+                NN.DataParallel(
+                    dense_res_bottleneck(
+                        kernel = kernel,
+                        stride = stride,
+                        infilters = infilters,
+                        hidden_filters = hidden_filters,
+                        outfilters = outfilters
+                        )))
+                    #dense_res(kernel=11, stride = 5, infilters=infilters,outfilters=filters)))
+            infilters += outfilters
+            
+        kernel=3
+        self.dense_res_gen.append(
+            NN.DataParallel(
+                NN.Conv1d(infilters, 1, kernel_size=kernel, stride=1, padding=(kernel - 1) // 2)))
+        
         self.proj = NN.DataParallel(weight_norm(NN.Linear(state_size, frame_size), ['weight', 'bias']))
         self.stopper = NN.DataParallel(weight_norm(NN.Linear(state_size, 1), ['weight', 'bias']))
 
@@ -320,8 +375,11 @@ class Generator(NN.Module):
 
         x = T.cat(x_list, 1)
         s = T.stack(s_list, 1)
-
-        return x, s, stop_list, tovar(length * frame_size)
+        x = x.unsqueeze(1)
+        for layer in self.dense_res_gen:
+            x_next = layer(x)
+            x = T.cat([x, x_next],1)
+        return x_next.squeeze(1), s, stop_list, tovar(length * frame_size)
 
 
 class Discriminator(NN.Module):
@@ -329,7 +387,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[9, 5, 128],[9, 5, 128],[3, 4, 128],[3,4,128]]):
+                 cnn_struct = [[9, 5, 64],[5,3, 64],[5, 3, 64],[3,2,64]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
