@@ -228,12 +228,13 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].view(batch_size, output_size)
 
-def calc_dists(hidden_states):
+def calc_dists(hidden_states, hidden_state_lengths):
     means_d = []
     stds_d = []
-    for h in hidden_states:
-        m = h.mean(2)
-        s = h.std(2)
+    for h, l in zip(hidden_states, hidden_state_lengths):
+        mask = length_mask((h.size()[0], h.size()[2]), l)
+        m = h.sum(2) / l.unsqueeze(1).float()
+        s = ((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 2).sum(2) / l.unsqueeze(1).float()
         means_d.append((m.mean(0),m.std(0)))
         means_d.append((s.mean(0),s.std(0)))
         stds_d.append((m.std(0),m.std(0)))
@@ -374,11 +375,6 @@ class Discriminator(NN.Module):
         embed_size = self._embed_size
         batch_size, maxlen = x.size()
 
-        nframes = length
-        for cnn_config in self.cnn_struct:
-            kernel, stride, outfilters = cnn_config
-            nframes = (nframes + stride - 1) / stride
-        nframes_max = tonumpy(nframes).max()
         xold = x
 
         initial_state = (
@@ -386,10 +382,15 @@ class Discriminator(NN.Module):
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
                 )
         cnn_outputs = []
+        cnn_output_lengths = []
         cnn_output = xold.unsqueeze(1)
-        for cnn_layer in self.cnn:
+        nframes = length
+        for cnn_layer, (_, stride, _) in zip(self.cnn, self.cnn_struct):
             cnn_output = F.leaky_relu(cnn_layer(cnn_output))
+            nframes = (nframes + stride - 1) / stride
+            cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
             cnn_outputs.append(cnn_output)
+            cnn_output_lengths.append(nframes)
         x = cnn_output
         x = x.permute(0, 2, 1)
         #x = x.view(32, nframes_max, frame_size)
@@ -404,7 +405,7 @@ class Discriminator(NN.Module):
         res_out = self.residual_net(conv_out)
         classifier_out = self.classifier(res_out).view(batch_size, max_nframes)
         
-        return classifier_out, cnn_outputs, nframes
+        return classifier_out, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=100, type=int)
@@ -560,6 +561,8 @@ if __name__ == '__main__':
 
         for p in param_g:
             p.requires_grad = False
+        for p in param_d:
+            p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
             with Timer.new('load', print_=False):
@@ -575,8 +578,7 @@ if __name__ == '__main__':
                 cl = tovar(cl).long()
 
                 embed_d = e_d(cs, cl)
-                cls_d, hidden_states_d, nframes_d = d(real_data, real_len, embed_d)
-                dists_d = calc_dists(hidden_states_d)
+                cls_d, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
                 target = tovar(T.ones(*(cls_d.size())) * 0.9)
                 weight = length_mask(cls_d.size(), nframes_d)
                 loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / nframes_d.float()
@@ -592,7 +594,7 @@ if __name__ == '__main__':
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data = tovar((fake_data + noise).data)
                 fake_data.requires_grad = True
-                cls_g, _, nframes_g = d(fake_data, fake_len, embed_d)
+                cls_g, _, _, nframes_g = d(fake_data, fake_len, embed_d)
 
                 target = tovar(T.zeros(*(cls_g.size())))
                 weight = length_mask(cls_g.size(), nframes_g)
@@ -647,6 +649,8 @@ if __name__ == '__main__':
         gen_iter += 1
         for p in param_g:
             p.requires_grad = True
+        for p in param_d:
+            p.requires_grad = False
 
         _, cs, cl, _, _ = dataset.pick_words(
                 batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
@@ -659,14 +663,15 @@ if __name__ == '__main__':
             noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
             fake_data += noise
             
-            cls_g, hidden_states_g, nframes_g = d(fake_data, fake_len, embed_d)
+            cls_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
             
-            _, hidden_states_d, nframes_d = d(real_data, real_len, embed_d)
-            dists_d = calc_dists(hidden_states_d)
-            dists_g = calc_dists(hidden_states_g)
+            _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
+            dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
+            dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
             feature_penalty = 0
             #dists are (object, std) pairs.
             #penalizing z-scores of gen from real distribution
+            #Note that the model could not do anything to r[1] by optimizing G.
             for r, f in zip(dists_d, dists_g):
                 feature_penalty += T.pow((r[0] - f[0]) / (r[1] + 1e-6), 2).mean() / batch_size
 
