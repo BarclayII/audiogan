@@ -95,6 +95,19 @@ def tovar(*arrs):
     vars_ = [T.autograd.Variable(t) for t in tensors]
     return vars_[0] if len(vars_) == 1 else vars_
 
+def adversarial_movement_d(data, data_len, embed_d, target, weight, d, scale = 1e-3):
+    cls, _, _, nframes = d(data, data_len, embed_d)
+
+    #feature_penalty = [T.pow(r - f,2).mean() for r, f in zip(dists_d, dists_g)]
+    loss = binary_cross_entropy_with_logits_per_sample(cls, target, weight=weight) / nframes.float()
+    # Check gradient w.r.t. generated output occasionally
+    grad = T.autograd.grad(loss, data, grad_outputs=T.ones(loss.size()).cuda(), 
+                           create_graph=True, retain_graph=True, only_inputs=True)[0]
+                           
+    advers = (grad > 0).type(T.FloatTensor) * scale - (grad < 0).type(T.FloatTensor) * scale
+    advers = advers.data
+    return advers
+
 
 def tonumpy(*vars_):
     arrs = [v.data.cpu().numpy() for v in vars_]
@@ -636,16 +649,26 @@ if __name__ == '__main__':
                         batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
 
             with Timer.new('train_d', print_=False):
-                noise = tovar(RNG.randn(*real_data.shape) * args.noisescale)
-                real_data = tovar(real_data) + noise
-                real_len = tovar(real_len).long()
                 cs = tovar(cs).long()
                 cl = tovar(cl).long()
-
                 embed_d = e_d(cs, cl)
-                cls_d, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
-                target = tovar(T.ones(*(cls_d.size())) * 0.9)
-                weight = length_mask(cls_d.size(), nframes_d)
+                real_len = tovar(real_len).long()
+                if dis_iter % 2 == 0:
+                    noise = tovar(RNG.randn(*real_data.shape) * args.noisescale)
+                    real_data = tovar(real_data) + noise
+                    cls_d, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
+                    target = tovar(T.ones(*(cls_d.size())) * 0.9)
+                    weight = length_mask(cls_d.size(), nframes_d)
+                else:
+                    real_data = tovar(real_data)
+                    real_data.requires_grad = True
+                    cls_d, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
+                    target = tovar(T.ones(*(cls_d.size())) * 0.9)
+                    weight = length_mask(cls_d.size(), nframes_d)
+                    advers = adversarial_movement_d(real_data, real_len, embed_d, target, weight, d)
+                    real_data = tovar((real_data + tovar(advers)).data)
+
+                #real_data.requires_grad = True
                 loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / nframes_d.float()
                 loss_d = loss_d.mean()
                 correct_d = ((cls_d.data > 0).float() * weight.data).sum()
@@ -656,18 +679,30 @@ if __name__ == '__main__':
                 embed_g = e_g(cs2, cl2)
                 embed_d = e_d(cs2, cl2)
                 fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
-                noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-                fake_data = tovar((fake_data + noise).data)
+                if dis_iter % 2 == 0:
+                    noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
+                    fake_data = tovar((fake_data + noise).data)
+                else:
+                    fake_data = tovar(fake_data.data)
+                    fake_data.requires_grad = True
+                    cls_g, _, _, nframes_g = d(fake_data, fake_len, embed_d)
+                    target = tovar(T.zeros(*(cls_g.size())))
+                    weight = length_mask(cls_g.size(), nframes_g)
+                    advers = adversarial_movement_d(fake_data, fake_len, embed_d, target, weight, d)
+                    fake_data = tovar((fake_data + tovar(advers)).data)
                 fake_data.requires_grad = True
                 cls_g, _, _, nframes_g = d(fake_data, fake_len, embed_d)
-
                 target = tovar(T.zeros(*(cls_g.size())))
                 weight = length_mask(cls_g.size(), nframes_g)
+
                 #feature_penalty = [T.pow(r - f,2).mean() for r, f in zip(dists_d, dists_g)]
                 loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
 
                 # Check gradient w.r.t. generated output occasionally
-                grad = T.autograd.grad(loss_g, fake_data, grad_outputs=T.ones(loss_g.size()).cuda(), create_graph=True, retain_graph=True, only_inputs=True)[0]
+                grad = T.autograd.grad(loss_g, fake_data, grad_outputs=T.ones(loss_g.size()).cuda(), 
+                                       create_graph=True, retain_graph=True, only_inputs=True)[0]
+                                       
+                #advers = (grad > 0).type(T.FloatTensor) *.001 - (grad < 0).type(T.FloatTensor) * .001
                 norm = grad.norm(2, 1) ** 2
                 norm = (norm / nframes_g.float()).data
                 x_grad_norm = norm.mean()
