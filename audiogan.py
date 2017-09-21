@@ -298,7 +298,7 @@ class Generator(NN.Module):
                  noise_size=100,
                  state_size=1024,
                  num_layers=1,
-                 struct = [[9, 4, 100, 16],[9, 4, 100, 16],[9, 4, 100, 16],[9, 4, 100, 16]]
+                 struct = [[9, 4, 20, 8],[9, 4, 20, 8],[9, 4, 20, 8],[9, 4, 20, 8]]
                  ):
         NN.Module.__init__(self)
         self._frame_size = frame_size
@@ -406,7 +406,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[5, 2, 64], [5, 2, 64], [5, 2, 128], [5, 2, 128], [5, 2, 256], [5, 2, 256]]):
+                 cnn_struct = [[5, 2, 32], [5, 2, 32], [5, 2, 64], [5, 2, 64], [5, 2, 128], [5, 2, 128]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -437,8 +437,6 @@ class Discriminator(NN.Module):
         self.residual_net = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
                 Residual(state_size),
-                Residual(state_size),
-                Residual(state_size)
             ))
         self.classifier = NN.DataParallel(NN.Sequential(
                 weight_norm(NN.Linear(state_size, state_size // 2),['weight','bias']),
