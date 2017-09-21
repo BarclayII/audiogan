@@ -95,7 +95,62 @@ def tovar(*arrs):
     vars_ = [T.autograd.Variable(t) for t in tensors]
     return vars_[0] if len(vars_) == 1 else vars_
 
+def adversarially_sample_z(batch_size, nframes, _noise_size, maxlen, embed_g, noisescale, embed_d, real_data, real_len, 
+                                       g_optim, framesize, scale=1e-2):
+    z = tovar(T.randn(batch_size, nframes, _noise_size))
+    z.requires_grad = True
+    #advers = adversarial_movement_g(data, embed_d, target, weight, d, scale)
+    fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g, z = z)
+    noise = tovar(T.randn(*fake_data.size()) * noisescale)
+    fake_data += noise
+    
+    cls_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
+    
+    _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
+    dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
+    dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
+    feature_penalty = 0
+    #dists are (object, std) pairs.
+    #penalizing z-scores of gen from real distribution
+    #Note that the model could not do anything to r[1] by optimizing G.
+    for r, f in zip(dists_d, dists_g):
+        feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
+
+    if g_optim == 'boundary_seeking':
+        target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
+    else:
+        target = tovar(T.zeros(*(cls_g.size())))            
+    weight = length_mask(cls_g.size(), nframes_g)
+    nframes_max = (fake_len / framesize).data.max()
+    weight_r = length_mask((batch_size, nframes_max), fake_len / framesize)
+    loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
+
+
+    
+    # Check gradient w.r.t. generated output occasionally
+    grad = T.autograd.grad(loss, z, grad_outputs=T.ones(loss.size()).cuda(), 
+                           create_graph=True, retain_graph=True, only_inputs=True)[0]
+    advers = (grad > 1e-9).type(T.FloatTensor) * scale - (grad < -1e-9).type(T.FloatTensor) * scale
+    advers = advers.data
+
+    z = tovar((z + tovar(advers)).data)
+    return z
+
 def adversarial_movement_d(data, data_len, embed_d, target, weight, d, scale = 1e-3):
+    cls, _, _, nframes = d(data, data_len, embed_d)
+
+    #feature_penalty = [T.pow(r - f,2).mean() for r, f in zip(dists_d, dists_g)]
+    loss = binary_cross_entropy_with_logits_per_sample(cls, target, weight=weight) / nframes.float()
+    # Check gradient w.r.t. generated output occasionally
+    grad = T.autograd.grad(loss, data, grad_outputs=T.ones(loss.size()).cuda(), 
+                           create_graph=True, retain_graph=True, only_inputs=True)[0]
+                           
+    advers = (grad > 0).type(T.FloatTensor) * scale - (grad < 0).type(T.FloatTensor) * scale
+    advers = advers.data
+    return advers
+
+
+def adversarial_movement_g(data, embed_d, target, weight, d, scale = 1e-3):
     cls, _, _, nframes = d(data, data_len, embed_d)
 
     #feature_penalty = [T.pow(r - f,2).mean() for r, f in zip(dists_d, dists_g)]
@@ -278,18 +333,30 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].view(batch_size, output_size)
 
+def fourth_moment(v):
+    v_mean = v.mean(0)
+    fourth_var = (((v -v_mean.unsqueeze(0))**4).sum(0))**(1/4)
+    return fourth_var
+
 def calc_dists(hidden_states, hidden_state_lengths):
     means_d = []
     stds_d = []
+    fourth_d = []
     for h, l in zip(hidden_states, hidden_state_lengths):
         mask = length_mask((h.size()[0], h.size()[2]), l)
         m = h.sum(2) / l.unsqueeze(1).float()
-        s = ((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 2).sum(2) / l.unsqueeze(1).float()
+        s = (((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 2).sum(2) ** (1./2.) ) / l.unsqueeze(1).float()
+        f = (((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 4).sum(2) ** (1./4.) ) / l.unsqueeze(1).float()
         means_d.append((m.mean(0),m.std(0)))
         means_d.append((s.mean(0),s.std(0)))
+        means_d.append((f.mean(0),f.std(0)))
         stds_d.append((m.std(0),m.std(0)))
         stds_d.append((s.std(0),s.std(0)))
-    return means_d + stds_d
+        stds_d.append((f.std(0),f.std(0)))
+        fourth_d.append((fourth_moment(m),m.std(0)))
+        fourth_d.append((fourth_moment(s),s.std(0)))
+        fourth_d.append((fourth_moment(f),f.std(0)))
+    return means_d + stds_d + fourth_d
 
 class Generator(NN.Module):
     def __init__(self,
@@ -757,7 +824,15 @@ if __name__ == '__main__':
             cl = tovar(cl).long()
             embed_g = e_g(cs, cl)
             embed_d = e_d(cs, cl)
-            fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
+            nframes = div_roundup(maxlen, g._frame_size)
+            
+            z = adversarially_sample_z(batch_size, nframes, g._noise_size, maxlen, embed_g, args.noisescale, embed_d, real_data, real_len, 
+                                       args.g_optim, args.framesize, scale=1e-2)
+
+
+
+            #advers = adversarial_movement_g(data, embed_d, target, weight, d, scale)
+            fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g, z = z)
             noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
             fake_data += noise
             
@@ -782,6 +857,13 @@ if __name__ == '__main__':
             weight_r = length_mask((batch_size, nframes_max), fake_len / args.framesize)
             loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
 
+
+
+
+
+
+
+            
             reward = -loss.data
             baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
             d_train_writer.add_summary(
