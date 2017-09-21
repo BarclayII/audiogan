@@ -473,7 +473,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[5, 2, 32], [5, 2, 32], [5, 2, 64], [5, 2, 64], [5, 2, 128], [5, 2, 128]]):
+                 cnn_struct = [[5, 2, 8], [5, 2, 16], [5, 2, 32], [5, 2, 64], [5, 2, 128], [5, 2, 128]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
