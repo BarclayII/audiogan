@@ -3,6 +3,7 @@ from torch.nn import Parameter
 from functools import wraps
 
 import torch as T
+import gc
 import torch.nn as NN
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
@@ -99,7 +100,6 @@ def adversarially_sample_z(batch_size, nframes, _noise_size, maxlen, embed_g, no
                                        g_optim, framesize, scale=1e-2):
     z = tovar(T.randn(batch_size, nframes, _noise_size))
     z.requires_grad = True
-    #advers = adversarial_movement_g(data, embed_d, target, weight, d, scale)
     fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g, z = z)
     noise = tovar(T.randn(*fake_data.size()) * noisescale)
     fake_data += noise
@@ -365,7 +365,7 @@ class Generator(NN.Module):
                  noise_size=100,
                  state_size=1024,
                  num_layers=1,
-                 struct = [[9, 4, 20, 8],[9, 4, 20, 8],[9, 4, 20, 8],[9, 4, 20, 8]]
+                 struct = [[17, 8, 128, 16],[9, 4, 64, 32],[9, 4, 64, 32],[9, 4, 32, 32]]
                  ):
         NN.Module.__init__(self)
         self._frame_size = frame_size
@@ -473,7 +473,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[5, 2, 8], [5, 2, 16], [5, 2, 32], [5, 2, 64], [5, 2, 128], [5, 2, 128]]):
+                 cnn_struct = [[7, 2, 16], [7, 2, 32], [7, 2, 64], [7, 2, 128], [7, 2, 256], [7, 2, 512]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -709,6 +709,7 @@ if __name__ == '__main__':
         for j in range(args.critic_iter):
             dis_iter += 1
             with Timer.new('load', print_=False):
+                gc.collect()
                 epoch, batch_id, real_data, real_len, _, cs, cl = dataloader.next()
                 _, cs2, cl2, _, _ = dataset.pick_words(
                         batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
@@ -831,7 +832,6 @@ if __name__ == '__main__':
 
 
 
-            #advers = adversarial_movement_g(data, embed_d, target, weight, d, scale)
             fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g, z = z)
             noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
             fake_data += noise
