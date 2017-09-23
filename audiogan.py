@@ -568,12 +568,13 @@ parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
 parser.add_argument('--just_run', type=str, default='')
 parser.add_argument('--loaditerations', type=int, default=0)
+parser.add_argument('--gencatchup', type=int, default=1)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='dataset.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=40000, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=0.1)
+parser.add_argument('--noisescale', type=float, default=0.01)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
 
@@ -713,7 +714,7 @@ if __name__ == '__main__':
                 epoch, batch_id, real_data, real_len, _, cs, cl = dataloader.next()
                 _, cs2, cl2, _, _ = dataset.pick_words(
                         batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
-
+                #last_real_raw = [real_data, real_len]
             with Timer.new('train_d', print_=False):
                 cs = tovar(cs).long()
                 cl = tovar(cl).long()
@@ -812,119 +813,124 @@ if __name__ == '__main__':
             if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
 
-        gen_iter += 1
         for p in param_g:
             p.requires_grad = True
         for p in param_d:
             p.requires_grad = False
-
-        _, cs, cl, _, _ = dataset.pick_words(
-                batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
-        with Timer.new('train_g', print_=False):
-            cs = tovar(cs).long()
-            cl = tovar(cl).long()
-            embed_g = e_g(cs, cl)
-            embed_d = e_d(cs, cl)
-            nframes = div_roundup(maxlen, g._frame_size)
-            
-            z = adversarially_sample_z(batch_size, nframes, g._noise_size, maxlen, embed_g, args.noisescale, embed_d, real_data, real_len, 
-                                       args.g_optim, args.framesize, scale=1e-2)
-
-
-
-            fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g, z = z)
-            noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-            fake_data += noise
-            
-            cls_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
-            
-            _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
-            dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
-            dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
-            feature_penalty = 0
-            #dists are (object, std) pairs.
-            #penalizing z-scores of gen from real distribution
-            #Note that the model could not do anything to r[1] by optimizing G.
-            for r, f in zip(dists_d, dists_g):
-                feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
-
-            if args.g_optim == 'boundary_seeking':
-                target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
-            else:
-                target = tovar(T.zeros(*(cls_g.size())))            
-            weight = length_mask(cls_g.size(), nframes_g)
-            nframes_max = (fake_len / args.framesize).data.max()
-            weight_r = length_mask((batch_size, nframes_max), fake_len / args.framesize)
-            loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-
-
-
-
-
-
-
-            
-            reward = -loss.data
-            baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
-            d_train_writer.add_summary(
-                    TF.Summary(
-                        value=[
-                            TF.Summary.Value(tag='reward_baseline', simple_value=baseline),
-                            TF.Summary.Value(tag='reward/mean', simple_value=reward.cpu().numpy().mean()),
-                            TF.Summary.Value(tag='reward/std', simple_value=reward.cpu().numpy().std()),
-                            ]
-                        ),
-                    gen_iter
-                    )
-            reward = (reward - baseline).unsqueeze(1) * weight_r.data
-
-            '''
-            fp_raw = tonumpy(feature_penalty)
-            if fp_raw  * lambda_fp > 100:
-                lambda_fp *= .2
-            if fp_raw  * lambda_fp > 10:
-                lambda_fp *= .9
-            if fp_raw  * lambda_fp < 1:
-                lambda_fp *= 1.1
-            '''
-
-            _loss = loss.mean()
-            loss = _loss + feature_penalty * lambda_fp
-            #loss = _loss
-            for i, fake_stop in enumerate(fake_stop_list):
-                fake_stop.reinforce(reward[:, i:i+1])
-            opt_g.zero_grad()
-            loss.backward(retain_graph=True)
-            T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
-            check_grad(param_g)
-            g_grad_norm = clip_grad(param_g, args.ggradclip)
-            d_train_writer.add_summary(
-                    TF.Summary(
-                        value=[
-                            TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
-                            TF.Summary.Value(tag='feature_penalty', simple_value=tonumpy(feature_penalty)[0]),
-                            TF.Summary.Value(tag='lambda_fp', simple_value=lambda_fp),
-                            ]
-                        ),
-                    gen_iter
-                    )
-            opt_g.step()
-
-        if gen_iter % 20 == 0:
-            embed_g = e_g(cseq_fixed, clen_fixed)
-            fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
-            fake_data, fake_len = tonumpy(fake_data, fake_len)
-
-            for batch in range(batch_size):
-                fake_sample = fake_data[batch, :fake_len[batch]]
-                add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter)
-
-            if gen_iter % 500 == 0:
+        #real_data, real_len = last_real_raw[0], last_real_raw[1]
+        for _ in range(args.gencatchup):
+            gen_iter += 1
+            _, _, real_data, real_len, _, _, _ = dataloader.next()
+            noise = tovar(RNG.randn(*real_data.shape) * args.noisescale)
+            real_data = tovar(real_data) + noise
+            real_len = tovar(real_len).long()
+            _, cs, cl, _, _ = dataset.pick_words(
+                    batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
+            with Timer.new('train_g', print_=False):
+                cs = tovar(cs).long()
+                cl = tovar(cl).long()
+                embed_g = e_g(cs, cl)
+                embed_d = e_d(cs, cl)
+                nframes = div_roundup(maxlen, g._frame_size)
+                
+                z = adversarially_sample_z(batch_size, nframes, g._noise_size, maxlen, embed_g, args.noisescale, embed_d, real_data, real_len, 
+                                           args.g_optim, args.framesize, scale=1e-2)
+    
+    
+    
+                fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g, z = z)
+                noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
+                fake_data += noise
+                
+                cls_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
+                
+                _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
+                dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
+                dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
+                feature_penalty = 0
+                #dists are (object, std) pairs.
+                #penalizing z-scores of gen from real distribution
+                #Note that the model could not do anything to r[1] by optimizing G.
+                for r, f in zip(dists_d, dists_g):
+                    feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
+    
+                if args.g_optim == 'boundary_seeking':
+                    target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
+                else:
+                    target = tovar(T.zeros(*(cls_g.size())))            
+                weight = length_mask(cls_g.size(), nframes_g)
+                nframes_max = (fake_len / args.framesize).data.max()
+                weight_r = length_mask((batch_size, nframes_max), fake_len / args.framesize)
+                loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
+    
+    
+    
+    
+    
+    
+    
+                
+                reward = -loss.data
+                baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
+                d_train_writer.add_summary(
+                        TF.Summary(
+                            value=[
+                                TF.Summary.Value(tag='reward_baseline', simple_value=baseline),
+                                TF.Summary.Value(tag='reward/mean', simple_value=reward.cpu().numpy().mean()),
+                                TF.Summary.Value(tag='reward/std', simple_value=reward.cpu().numpy().std()),
+                                ]
+                            ),
+                        gen_iter
+                        )
+                reward = (reward - baseline).unsqueeze(1) * weight_r.data
+    
+                '''
+                fp_raw = tonumpy(feature_penalty)
+                if fp_raw  * lambda_fp > 100:
+                    lambda_fp *= .2
+                if fp_raw  * lambda_fp > 10:
+                    lambda_fp *= .9
+                if fp_raw  * lambda_fp < 1:
+                    lambda_fp *= 1.1
+                '''
+    
+                _loss = loss.mean()
+                loss = _loss + feature_penalty * lambda_fp
+                #loss = _loss
+                for i, fake_stop in enumerate(fake_stop_list):
+                    fake_stop.reinforce(reward[:, i:i+1])
+                opt_g.zero_grad()
+                loss.backward(retain_graph=True)
+                T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
+                check_grad(param_g)
+                g_grad_norm = clip_grad(param_g, args.ggradclip)
+                d_train_writer.add_summary(
+                        TF.Summary(
+                            value=[
+                                TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
+                                TF.Summary.Value(tag='feature_penalty', simple_value=tonumpy(feature_penalty)[0]),
+                                TF.Summary.Value(tag='lambda_fp', simple_value=lambda_fp),
+                                ]
+                            ),
+                        gen_iter
+                        )
+                opt_g.step()
+    
+            if gen_iter % 20 == 0:
+                embed_g = e_g(cseq_fixed, clen_fixed)
+                fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
+                fake_data, fake_len = tonumpy(fake_data, fake_len)
+    
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :fake_len[batch]]
-                    add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter)
-                T.save(d, '%s-dis-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-                T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-                T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-                T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-        print 'G', gen_iter, tonumpy(_loss), tonumpy(feature_penalty), lambda_fp, Timer.get('train_g')
+                    add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter)
+    
+                if gen_iter % 500 == 0:
+                    for batch in range(batch_size):
+                        fake_sample = fake_data[batch, :fake_len[batch]]
+                        add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter)
+                    T.save(d, '%s-dis-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+            print 'G', gen_iter, tonumpy(_loss), tonumpy(feature_penalty), lambda_fp, Timer.get('train_g')
