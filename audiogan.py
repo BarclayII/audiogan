@@ -135,7 +135,6 @@ def adversarially_sample_z(batch_size, nframes, _noise_size, maxlen, embed_g, no
 
     z = tovar((z + tovar(advers)).data)
     return z
-
 def adversarial_movement_d(data, data_len, embed_d, target, weight, d, scale = 1e-3):
     cls, _, _, nframes = d(data, data_len, embed_d)
 
@@ -253,6 +252,18 @@ def clip_grad(params, clip_norm):
     return norm
 
 
+class upsample(NN.Module):
+    def __init__(self,scale_factor):
+        NN.Module.__init__(self)
+        self.upsample = NN.Upsample(scale_factor=scale_factor, mode='bilinear')
+
+    def forward(self, x):
+        x = x.unsqueeze(-1)
+        x = self.upsample(x)[:,:,:,0]
+        return x
+#
+
+
 class Residual(NN.Module):
     def __init__(self,size):
         NN.Module.__init__(self)
@@ -263,6 +274,74 @@ class Residual(NN.Module):
     def forward(self, x):
         return self.relu(self.linear(x) + x)
 #
+class conv_res_bottleneck(NN.Module):
+    def __init__(self,kernel,stride,infilters,hidden_filters):
+        NN.Module.__init__(self)
+        self.infilters = infilters
+        self.conv = weight_norm(
+            NN.Conv1d(infilters, hidden_filters, kernel_size = kernel, stride=stride, padding=(kernel - 1) // 2),
+            ['weight','bias'])
+        self.conv_h = weight_norm(
+            NN.Conv1d(hidden_filters, hidden_filters, kernel_size = kernel, stride=1, padding=(kernel - 1) // 2),
+            ['weight','bias'])
+        self.deconv = weight_norm(
+            NN.ConvTranspose1d(hidden_filters, infilters, kernel-1, stride, padding=stride//2),
+            ['weight','bias'])
+        self.relu = NN.LeakyReLU()
+    def forward(self, x):
+        res = x
+        act = self.relu(self.conv(x))
+        act = self.relu(self.conv_h(act))
+        d = self.deconv(act)
+        diff = d.size()[-1] - res.size()[-1]
+        diff_half = int(diff/2.)
+        remain = int(diff % 2)
+        length = d.size()[-1]
+        d = d[:,:,diff_half:-diff_half-remain + length]
+        d += x
+        return self.relu(d)
+#
+class conv_res_bottleneck_no_relu(NN.Module):
+    def __init__(self,kernel,stride,infilters,hidden_filters):
+        NN.Module.__init__(self)
+        self.infilters = infilters
+        self.conv = weight_norm(
+            NN.Conv1d(infilters, hidden_filters, kernel_size = kernel, stride=stride, padding=(kernel - 1) // 2),
+            ['weight','bias'])
+        self.conv_h = weight_norm(
+            NN.Conv1d(hidden_filters, hidden_filters, kernel_size = kernel, stride=1, padding=(kernel - 1) // 2),
+            ['weight','bias'])
+        self.deconv = weight_norm(
+            NN.ConvTranspose1d(hidden_filters, infilters, kernel-1, stride, padding=stride-1),
+            ['weight','bias'])
+        self.relu = NN.LeakyReLU()
+    def forward(self, x):
+        res = x
+        act = self.relu(self.conv(x))
+        act = self.relu(self.conv_h(act))
+        d = self.deconv(act)
+        diff = d.size()[-1] - res.size()[-1]
+        diff_half = int(diff/2.)
+        remain = int(diff % 2)
+        length = d.size()[-1]
+        d = d[:,:,diff_half:-diff_half-remain + length]
+        d += x
+        return d
+class deconv_unpool_residual(NN.Module):
+    def __init__(self,infilters, outfilters, kernel, stride):
+        NN.Module.__init__(self)
+        self.deconv = weight_norm(NN.ConvTranspose1d(infilters, outfilters, kernel-1, stride=stride, padding=stride-1),['weight','bias'])
+        self.unpool = NN.DataParallel(upsample(stride))
+        self.relu = NN.LeakyReLU()
+    def forward(self, x):
+        d = self.deconv(x)
+        res = self.unpool(x)
+        diff = res.size()[-1] - d.size()[-1]
+        diff_half = int(diff/2.)
+        remain = int(diff % 2)
+        length = res.size()[-1]
+        res = res[:,:,diff_half:-diff_half-remain + length]
+        return d + res
 class dense_res_bottleneck(NN.Module):
     def __init__(self,kernel,stride,infilters,hidden_filters,outfilters):
         NN.Module.__init__(self)
@@ -365,7 +444,7 @@ class Generator(NN.Module):
                  noise_size=100,
                  state_size=1024,
                  num_layers=1,
-                 struct = [[17, 8, 128, 16],[9, 4, 64, 32],[9, 4, 64, 32],[9, 4, 32, 32]]
+                 cnn_struct = [['unpool',5,0],[7, 2, 200],[7, 2, 200],[7, 2, 200]]#,['unpool', 5, 80]
                  ):
         NN.Module.__init__(self)
         self._frame_size = frame_size
@@ -384,28 +463,41 @@ class Generator(NN.Module):
                     NN.DataParallel(weight_norm(
                         NN.LSTMCell(state_size, state_size),
                         ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih'])))
-        self.dense_res_gen = NN.ModuleList()
-        infilters = 1
-        for layer in struct:
-            kernel, stride, hidden_filters, outfilters = layer[0], layer[1], layer[2], layer[3]
-            self.dense_res_gen.append(
-                NN.DataParallel(
-                    dense_res_bottleneck(
-                        kernel = kernel,
-                        stride = stride,
-                        infilters = infilters,
-                        hidden_filters = hidden_filters,
-                        outfilters = outfilters
-                        )))
-                    #dense_res(kernel=11, stride = 5, infilters=infilters,outfilters=filters)))
-            infilters += outfilters
+        self.deconv = NN.ModuleList()
+        infilters = 200
+        for idx, layer in enumerate(cnn_struct[:2]):
+            kernel, stride, outfilters = layer[0],layer[1],layer[2]
+            if kernel == 'unpool':
+                pool = NN.DataParallel(upsample(stride))
+                self.deconv.append(pool)
+            else:
+                deconv = deconv_unpool_residual(infilters, outfilters, kernel, stride)
+                self.deconv.append(NN.DataParallel(deconv))
+                res = conv_res_bottleneck(kernel=11,stride=4,infilters = outfilters,hidden_filters = outfilters * 4)
+                self.deconv.append(NN.DataParallel(res))
+                infilters = outfilters
+        for idx, layer in enumerate(cnn_struct[1:]):
+            kernel, stride, outfilters = layer[0],layer[1],layer[2]
+            if kernel == 'unpool':
+                pool = NN.DataParallel(upsample(stride))
+                self.deconv.append(pool)
+            else:
+                res = conv_res_bottleneck(kernel=11,stride=4,infilters = infilters,hidden_filters = infilters * 4)
+                self.deconv.append(NN.DataParallel(res))
+                deconv = deconv_unpool_residual(infilters, outfilters, kernel, stride)
+                self.deconv.append(NN.DataParallel(deconv))
+                res = conv_res_bottleneck(kernel=11,stride=4,infilters = outfilters,hidden_filters = outfilters * 4)
+                self.deconv.append(NN.DataParallel(res))
+                infilters = outfilters
             
-        kernel=3
-        self.dense_res_gen.append(
-            NN.DataParallel(
-                weight_norm(NN.Conv1d(infilters, 1, kernel_size=kernel, stride=1, padding=(kernel - 1) // 2),
-                ['weight','bias'])))
-        
+        kernel=11
+        stride = 5
+        last_deconv = weight_norm(
+                NN.ConvTranspose1d(infilters, 1, kernel, stride=stride, padding=(kernel - 1) // 2),
+                ['weight','bias'])
+        self.deconv.append(NN.DataParallel(last_deconv))
+        last_res = conv_res_bottleneck_no_relu(kernel=11,stride=4,infilters = 1,hidden_filters = 20)
+        self.deconv.append(NN.DataParallel(last_res))
         self.proj = NN.DataParallel(weight_norm(NN.Linear(state_size, frame_size), ['weight', 'bias']))
         self.stopper = NN.DataParallel(weight_norm(NN.Linear(state_size, 1), ['weight', 'bias']))
 
@@ -462,10 +554,16 @@ class Generator(NN.Module):
         x = T.cat(x_list, 1)
         s = T.stack(s_list, 1)
         x = x.unsqueeze(1)
-        for layer in self.dense_res_gen:
-            x_next = layer(x)
-            x = T.cat([x, x_next],1)
-        return x_next.squeeze(1), s, stop_list, tovar(length * frame_size)
+        x = x.view(batch_size, 200, -1)
+        for layer in self.deconv:
+            x = layer(x)
+        x = x.squeeze(1)
+        '''
+        xlength = x.size()[-1]
+        rem = xlength%200
+        x = x[:,:xlength-rem]
+        '''
+        return x, s, stop_list, tovar(length * frame_size)
 
 
 class Discriminator(NN.Module):
@@ -551,7 +649,7 @@ class Discriminator(NN.Module):
         return classifier_out, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=100, type=int)
+parser.add_argument('--critic_iter', default=5, type=int)
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
@@ -560,7 +658,7 @@ parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
-parser.add_argument('--ggradclip', type=float, default=0.1)
+parser.add_argument('--ggradclip', type=float, default=.1)
 parser.add_argument('--dlr', type=float, default=1e-4)
 parser.add_argument('--glr', type=float, default=1e-4)
 parser.add_argument('--modelname', type=str, default = '')
@@ -808,7 +906,7 @@ if __name__ == '__main__':
                     dis_iter
                     )
 
-            print 'D', epoch, batch_id, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
+            print 'D', epoch, dis_iter, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
 
             if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
