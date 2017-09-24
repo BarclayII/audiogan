@@ -496,11 +496,12 @@ class Generator(NN.Module):
                 NN.ConvTranspose1d(infilters, 1, kernel, stride=stride, padding=(kernel - 1) // 2),
                 ['weight','bias'])
         self.deconv.append(NN.DataParallel(last_deconv))
-        last_res = conv_res_bottleneck_no_relu(kernel=11,stride=4,infilters = 1,hidden_filters = 20)
+        last_res = conv_res_bottleneck_no_relu(kernel=11,stride=4,infilters = 1,hidden_filters = 200)
         self.deconv.append(NN.DataParallel(last_res))
         self.proj = NN.DataParallel(weight_norm(NN.Linear(state_size, frame_size), ['weight', 'bias']))
         self.stopper = NN.DataParallel(weight_norm(NN.Linear(state_size, 1), ['weight', 'bias']))
-
+        self.tanh = NN.Sigmoid()
+        self.relu = NN.LeakyReLU()
     def forward(self, batch_size=None, length=None, z=None, c=None):
         frame_size = self._frame_size
         noise_size = self._noise_size
@@ -532,7 +533,7 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = self.proj(lstm_h[-1]).tanh_()
+            x_t = self.relu(self.proj(lstm_h[-1]))
             logit_s_t = self.stopper(lstm_h[-1])
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
@@ -563,7 +564,7 @@ class Generator(NN.Module):
         rem = xlength%200
         x = x[:,:xlength-rem]
         '''
-        return x, s, stop_list, tovar(length * frame_size)
+        return (self.tanh(x) * 2) -1, s, stop_list, tovar(length * frame_size)
 
 
 class Discriminator(NN.Module):
@@ -571,7 +572,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[7, 2, 16], [7, 2, 32], [7, 2, 64], [7, 2, 128], [7, 2, 256], [7, 2, 512]]):
+                 cnn_struct = [[7, 2, 8], [7, 2, 16], [7, 2, 32], [7, 2, 64], [7, 2, 128], [7, 2, 256], [5, 2, 512]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -658,9 +659,9 @@ parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
-parser.add_argument('--ggradclip', type=float, default=.1)
+parser.add_argument('--ggradclip', type=float, default=1)
 parser.add_argument('--dlr', type=float, default=1e-4)
-parser.add_argument('--glr', type=float, default=1e-4)
+parser.add_argument('--glr', type=float, default=1e-3)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
@@ -982,24 +983,45 @@ if __name__ == '__main__':
                         )
                 reward = (reward - baseline).unsqueeze(1) * weight_r.data
     
-                '''
-                fp_raw = tonumpy(feature_penalty)
-                if fp_raw  * lambda_fp > 100:
+                
+                fp_raw = NP.sqrt(tonumpy(feature_penalty))
+                fp_lambda_grad = fp_raw 
+                
+                if fp_lambda_grad  * lambda_fp > 100:
                     lambda_fp *= .2
-                if fp_raw  * lambda_fp > 10:
+                if fp_lambda_grad  * lambda_fp > 10:
                     lambda_fp *= .9
-                if fp_raw  * lambda_fp < 1:
+                if fp_lambda_grad  * lambda_fp < .1:
                     lambda_fp *= 1.1
-                '''
-    
+                if fp_lambda_grad  * lambda_fp < .01:
+                    lambda_fp *= 2
+                if lambda_fp > 1:
+                    lambda_fp = 1
+                
                 _loss = loss.mean()
-                loss = _loss + feature_penalty * lambda_fp
-                #loss = _loss
-                for i, fake_stop in enumerate(fake_stop_list):
-                    fake_stop.reinforce(reward[:, i:i+1])
                 opt_g.zero_grad()
-                loss.backward(retain_graph=True)
+                _loss.backward(retain_graph=True)
+                loss_grads = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+                loss_norm = sum(T.norm(loss_grads[p]) for p in loss_grads)
+                opt_g.zero_grad()
+                feature_penalty.backward(T.Tensor([lambda_fp]).cuda(), retain_graph=True)
+                fp_grads = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+                fp_norm = sum(T.norm(fp_grads[p]) for p in fp_grads)
+                #loss = _loss + feature_penalty * lambda_fp
+                #loss = _loss
+                opt_g.zero_grad()
+                for i, fake_stop in enumerate(fake_stop_list):
+                    fake_stop.reinforce(0.1 * reward[:, i:i+1])
+                #opt_g.zero_grad()
+                #loss.backward(retain_graph=True)
                 T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
+                pg_grads = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+                pg_norm = sum(T.norm(pg_grads[p]) for p in pg_grads)
+                for p in param_g:
+                    if p in loss_grads:
+                        p.grad.data += loss_grads[p]
+                    if p in fp_grads:
+                        p.grad.data += fp_grads[p]
                 check_grad(param_g)
                 g_grad_norm = clip_grad(param_g, args.ggradclip)
                 d_train_writer.add_summary(
@@ -1008,6 +1030,9 @@ if __name__ == '__main__':
                                 TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
                                 TF.Summary.Value(tag='feature_penalty', simple_value=tonumpy(feature_penalty)[0]),
                                 TF.Summary.Value(tag='lambda_fp', simple_value=lambda_fp),
+                                TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_norm),
+                                TF.Summary.Value(tag='g_fp_grad_norm', simple_value=fp_norm),
+                                TF.Summary.Value(tag='g_pg_grad_norm', simple_value=pg_norm),
                                 ]
                             ),
                         gen_iter
