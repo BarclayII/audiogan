@@ -901,6 +901,10 @@ if __name__ == '__main__':
                     fake_stop.reinforce(reward[:, i:i+1])
                 opt_g.zero_grad()
                 loss.backward(retain_graph=True)
+                for p in param_g:
+                    p.requires_grad = False
+                for p in g.stopper.parameters():
+                    p.requires_grad = True
                 T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
                 check_grad(param_g)
                 g_grad_norm = clip_grad(param_g, args.ggradclip)
