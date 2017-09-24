@@ -444,7 +444,7 @@ class Generator(NN.Module):
                  noise_size=100,
                  state_size=1024,
                  num_layers=1,
-                 cnn_struct = [['unpool',5,0],[7, 2, 200],[7, 2, 200],[7, 2, 200]]#,['unpool', 5, 80]
+                 cnn_struct = [[5,2,200],[5,2,200],[5,2,200],[5,2,200],[5,2,200]]#[['unpool',5,0],[7, 2, 200],[7, 2, 200],[7, 2, 200]]#,['unpool', 5, 80]
                  ):
         NN.Module.__init__(self)
         self._frame_size = frame_size
@@ -490,13 +490,13 @@ class Generator(NN.Module):
                 self.deconv.append(NN.DataParallel(res))
                 infilters = outfilters
             
-        kernel=11
-        stride = 5
+        kernel=5
+        stride = 2
         last_deconv = weight_norm(
                 NN.ConvTranspose1d(infilters, 1, kernel, stride=stride, padding=(kernel - 1) // 2),
                 ['weight','bias'])
         self.deconv.append(NN.DataParallel(last_deconv))
-        last_res = conv_res_bottleneck_no_relu(kernel=11,stride=4,infilters = 1,hidden_filters = 200)
+        last_res = conv_res_bottleneck_no_relu(kernel=11,stride=4,infilters = 1,hidden_filters = 20)
         self.deconv.append(NN.DataParallel(last_res))
         self.proj = NN.DataParallel(weight_norm(NN.Linear(state_size, frame_size), ['weight', 'bias']))
         self.stopper = NN.DataParallel(weight_norm(NN.Linear(state_size, 1), ['weight', 'bias']))
@@ -564,7 +564,7 @@ class Generator(NN.Module):
         rem = xlength%200
         x = x[:,:xlength-rem]
         '''
-        return (self.tanh(x) * 2) -1, s, stop_list, tovar(length * frame_size)
+        return (self.tanh(x) * 2.2) -1.1, s, stop_list, tovar(length * frame_size)
 
 
 class Discriminator(NN.Module):
@@ -572,7 +572,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[7, 2, 8], [7, 2, 16], [7, 2, 32], [7, 2, 64], [7, 2, 128], [7, 2, 256], [5, 2, 512]]):
+                 cnn_struct = [[3, 2, 4],[3, 2, 8],[3, 2, 16],[3, 2, 32],[3, 2, 64],[5, 2, 128], [5, 2, 256]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -650,7 +650,7 @@ class Discriminator(NN.Module):
         return classifier_out, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=5, type=int)
+parser.add_argument('--critic_iter', default=10, type=int)
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
