@@ -231,17 +231,26 @@ class Embedder(NN.Module):
         return h[:, -2:].view(batch_size, output_size)
 
 def calc_dists(hidden_states, hidden_state_lengths):
+    def kurt(x, dim):
+        return (((x - x.mean(dim, True)) ** 4).sum(dim) / x.size()[dim]) ** 0.25
     means_d = []
     stds_d = []
+    #kurts_d = []
     for h, l in zip(hidden_states, hidden_state_lengths):
         mask = length_mask((h.size()[0], h.size()[2]), l)
         m = h.sum(2) / l.unsqueeze(1).float()
-        s = ((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 2).sum(2) / l.unsqueeze(1).float()
+        s = T.sqrt(((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 2).sum(2) / l.unsqueeze(1).float())
+        #k = T.pow(((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 4).sum(2) / l.unsqueeze(1).float(), 0.25)
         means_d.append((m.mean(0),m.std(0)))
-        means_d.append((s.mean(0),s.std(0)))
-        stds_d.append((m.std(0),m.std(0)))
-        stds_d.append((s.std(0),s.std(0)))
-    return means_d + stds_d
+        #means_d.append((s.mean(0),s.std(0)))
+        #means_d.append((k.mean(0), k.std(0)))
+        #stds_d.append((m.std(0),m.std(0)))
+        #stds_d.append((s.std(0),s.std(0)))
+        #stds_d.append((k.std(0),k.std(0)))
+        #kurts_d.append((kurt(m, 0), m.std(0)))
+        #kurts_d.append((kurt(s, 0), s.std(0)))
+        #kurts_d.append((kurt(k, 0), k.std(0)))
+    return means_d + stds_d# + kurts_d
 
 class Generator(NN.Module):
     def __init__(self,
@@ -332,7 +341,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[5, 2, 64], [5, 2, 64], [5, 2, 128], [5, 2, 128], [5, 2, 256], [5, 2, 256]]):
+                 cnn_struct = [[7, 3, 64], [7, 3, 64], [7, 3, 128], [7, 3, 128], [7, 3, 256]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -435,6 +444,7 @@ parser.add_argument('--maxlen', type=int, default=40000, help='maximum sample le
 parser.add_argument('--noisescale', type=float, default=0.1)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
+parser.add_argument('--lambda_pg', type=float, default=0.1)
 
 args = parser.parse_args()
 args.conditional = True
@@ -668,14 +678,14 @@ if __name__ == '__main__':
             cls_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
             
             _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
-            dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
-            dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
-            feature_penalty = 0
+            #dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
+            #dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
+            #feature_penalty = 0
             #dists are (object, std) pairs.
             #penalizing z-scores of gen from real distribution
             #Note that the model could not do anything to r[1] by optimizing G.
-            for r, f in zip(dists_d, dists_g):
-                feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
+            #for r, f in zip(dists_d, dists_g):
+            #    feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
 
             if args.g_optim == 'boundary_seeking':
                 target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
@@ -710,22 +720,46 @@ if __name__ == '__main__':
                 lambda_fp *= 1.1
             '''
 
-            _loss = loss.mean()
-            loss = _loss + feature_penalty * lambda_fp
+            loss = loss.mean()
+            #loss = _loss + feature_penalty * lambda_fp
             #loss = _loss
             for i, fake_stop in enumerate(fake_stop_list):
-                fake_stop.reinforce(reward[:, i:i+1])
+                fake_stop.reinforce(args.lambda_pg * reward[:, i:i+1])
+            # Debug the gradient norms
             opt_g.zero_grad()
             loss.backward(retain_graph=True)
+            loss_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+            loss_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+            #opt_g.zero_grad()
+            #feature_penalty.backward(T.Tensor([lambda_fp]).cuda(), retain_graph=True)
+            #fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+            #fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+            for p in param_g:
+                p.requires_grad = False
+            for p in g.stopper.parameters():
+                p.requires_grad = True
+            #opt_g.zero_grad()
             T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
+            pg_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+            # Do the real thing
+            for p in param_g:
+                if p.grad is not None:
+                    if p in loss_grad_dict:
+                        p.grad.data += loss_grad_dict[p]
+                    #if p in fp_grad_dict:
+                    #    p.grad.data += fp_grad_dict[p]
+
             check_grad(param_g)
             g_grad_norm = clip_grad(param_g, args.ggradclip)
             d_train_writer.add_summary(
                     TF.Summary(
                         value=[
                             TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
-                            TF.Summary.Value(tag='feature_penalty', simple_value=tonumpy(feature_penalty)[0]),
-                            TF.Summary.Value(tag='lambda_fp', simple_value=lambda_fp),
+                            #TF.Summary.Value(tag='feature_penalty', simple_value=tonumpy(feature_penalty)[0]),
+                            #TF.Summary.Value(tag='lambda_fp', simple_value=lambda_fp),
+                            TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_grad_norm),
+                            #TF.Summary.Value(tag='g_fp_grad_norm', simple_value=fp_grad_norm),
+                            TF.Summary.Value(tag='g_pg_grad_norm', simple_value=pg_grad_norm),
                             ]
                         ),
                     gen_iter
@@ -749,4 +783,4 @@ if __name__ == '__main__':
                 T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-        print 'G', gen_iter, tonumpy(_loss), tonumpy(feature_penalty), lambda_fp, Timer.get('train_g')
+        print 'G', gen_iter, tonumpy(loss), Timer.get('train_g')
