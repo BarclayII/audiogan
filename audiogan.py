@@ -109,6 +109,8 @@ def adversarially_sample_z(batch_size, nframes, _noise_size, maxlen, embed_g, no
     _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
     dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
     dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
+    dists_d += calc_dists([real_data.unsqueeze(1)], hidden_states_length_d)
+    dists_g += calc_dists([fake_data.unsqueeze(1)], hidden_states_length_g)
     feature_penalty = 0
     #dists are (object, std) pairs.
     #penalizing z-scores of gen from real distribution
@@ -327,6 +329,19 @@ class conv_res_bottleneck_no_relu(NN.Module):
         d = d[:,:,diff_half:-diff_half-remain + length]
         d += x
         return d
+class deconv_layer(NN.Module):
+    def __init__(self,infilters, outfilters, kernel, stride, relu=True):
+        NN.Module.__init__(self)
+        self.deconv = weight_norm(NN.ConvTranspose1d(infilters, outfilters, kernel-1, stride=stride, padding=stride-1),['weight','bias'])
+        if relu:
+            self.relu = NN.LeakyReLU()
+        else:
+            self.relu = False
+    def forward(self, x):
+        d = self.deconv(x)
+        if self.relu:
+            d = self.relu(d)
+        return d
 class deconv_unpool_residual(NN.Module):
     def __init__(self,infilters, outfilters, kernel, stride):
         NN.Module.__init__(self)
@@ -423,7 +438,7 @@ def calc_dists(hidden_states, hidden_state_lengths):
     fourth_d = []
     for h, l in zip(hidden_states, hidden_state_lengths):
         mask = length_mask((h.size()[0], h.size()[2]), l)
-        m = h.sum(2) / l.unsqueeze(1).float()
+        m = (h*mask.unsqueeze(1).float()).sum(2) / l.unsqueeze(1).float()
         s = (((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 2).sum(2) ** (1./2.) ) / l.unsqueeze(1).float()
         f = (((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 4).sum(2) ** (1./4.) ) / l.unsqueeze(1).float()
         means_d.append((m.mean(0),m.std(0)))
@@ -444,7 +459,8 @@ class Generator(NN.Module):
                  noise_size=100,
                  state_size=1024,
                  num_layers=1,
-                 cnn_struct = [[5,2,200],[5,2,200],[5,2,200],[5,2,200],[5,2,200]]#[['unpool',5,0],[7, 2, 200],[7, 2, 200],[7, 2, 200]]#,['unpool', 5, 80]
+                 cnn_struct = [[11, 5, 600],[3, 1, 600],[11, 5, 400],[3, 1, 400],
+                               [5, 2, 300],[3, 1, 200],[5, 2, 100],[3, 1, 100],[5, 2, 50],[3, 1, 1]]#,['unpool', 5, 80]
                  ):
         NN.Module.__init__(self)
         self._frame_size = frame_size
@@ -465,7 +481,17 @@ class Generator(NN.Module):
                         ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih'])))
         self.deconv = NN.ModuleList()
         infilters = 200
-        for idx, layer in enumerate(cnn_struct[:2]):
+        for idx, layer in enumerate(cnn_struct):
+            kernel, stride, outfilters = layer[0],layer[1],layer[2]
+            if idx < len(cnn_struct)-1:
+                deconv = deconv_layer(infilters, outfilters, kernel, stride)
+            else:
+                deconv = deconv_layer(infilters, outfilters, kernel, stride, relu=False)
+            self.deconv.append(NN.DataParallel(deconv))
+            infilters = outfilters
+            
+        '''
+        for idx, layer in enumerate(cnn_struct[:1]):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
             if kernel == 'unpool':
                 pool = NN.DataParallel(upsample(stride))
@@ -489,15 +515,16 @@ class Generator(NN.Module):
                 res = conv_res_bottleneck(kernel=11,stride=4,infilters = outfilters,hidden_filters = outfilters * 4)
                 self.deconv.append(NN.DataParallel(res))
                 infilters = outfilters
-            
-        kernel=5
-        stride = 2
+        
+        kernel=11
+        stride = 5
         last_deconv = weight_norm(
                 NN.ConvTranspose1d(infilters, 1, kernel, stride=stride, padding=(kernel - 1) // 2),
                 ['weight','bias'])
         self.deconv.append(NN.DataParallel(last_deconv))
         last_res = conv_res_bottleneck_no_relu(kernel=11,stride=4,infilters = 1,hidden_filters = 20)
         self.deconv.append(NN.DataParallel(last_res))
+        '''
         self.proj = NN.DataParallel(weight_norm(NN.Linear(state_size, frame_size), ['weight', 'bias']))
         self.stopper = NN.DataParallel(weight_norm(NN.Linear(state_size, 1), ['weight', 'bias']))
         self.tanh = NN.Sigmoid()
@@ -554,17 +581,20 @@ class Generator(NN.Module):
 
         x = T.cat(x_list, 1)
         s = T.stack(s_list, 1)
-        x = x.unsqueeze(1)
-        x = x.view(batch_size, 200, -1)
-        for layer in self.deconv:
-            x = layer(x)
-        x = x.squeeze(1)
-        '''
-        xlength = x.size()[-1]
-        rem = xlength%200
-        x = x[:,:xlength-rem]
-        '''
-        return (self.tanh(x) * 2.2) -1.1, s, stop_list, tovar(length * frame_size)
+        if 1:
+            x = x.unsqueeze(1)
+            #print('start', x.size())
+            x = x.view(batch_size, -1, 200)
+            x = x.permute(0,2,1)
+            #x = x.permute(0,2,1)
+            #print(x.size())
+            for layer in self.deconv:
+                x = layer(x)
+                #print(x.size())
+            #x = x.permute(0,2,1)
+            x = x.squeeze(1)
+        #print('end', x.size())
+        return (self.tanh(x) * 2.4) -1.2, s, stop_list, tovar(length * frame_size)
 
 
 class Discriminator(NN.Module):
@@ -572,7 +602,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[3, 2, 4],[3, 2, 8],[3, 2, 16],[3, 2, 32],[3, 2, 64],[5, 2, 128], [5, 2, 256]]):
+                 cnn_struct = [[11,5,64],[5,2,128],[5,2,256]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -627,10 +657,11 @@ class Discriminator(NN.Module):
         cnn_output_lengths = []
         cnn_output = xold.unsqueeze(1)
         nframes = length
+        cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
         for cnn_layer, (_, stride, _) in zip(self.cnn, self.cnn_struct):
             cnn_output = F.leaky_relu(cnn_layer(cnn_output))
             nframes = (nframes + stride - 1) / stride
-            cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
+            #cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
             cnn_outputs.append(cnn_output)
             cnn_output_lengths.append(nframes)
         x = cnn_output
@@ -682,7 +713,7 @@ args.conditional = True
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-lambda_fp = 1
+lambda_fp = .1
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
     modelnameload = None
@@ -785,7 +816,7 @@ epoch = 1
 l = 10
 alpha = 0.1
 baseline = None
-
+gencatchup = args.gencatchup
 param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
@@ -908,7 +939,8 @@ if __name__ == '__main__':
                     )
 
             print 'D', epoch, dis_iter, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
-
+            if acc_d == 1 and acc_g == 1:
+                gencatchup = 1#Right now, running generator twice crashes system.
             if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
 
@@ -917,7 +949,7 @@ if __name__ == '__main__':
         for p in param_d:
             p.requires_grad = False
         #real_data, real_len = last_real_raw[0], last_real_raw[1]
-        for _ in range(args.gencatchup):
+        for _ in range(gencatchup):
             gen_iter += 1
             _, _, real_data, real_len, _, _, _ = dataloader.next()
             noise = tovar(RNG.randn(*real_data.shape) * args.noisescale)
@@ -946,13 +978,15 @@ if __name__ == '__main__':
                 _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
                 dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
                 dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
+                dists_d += calc_dists([real_data.unsqueeze(1)], hidden_states_length_d)
+                dists_g += calc_dists([fake_data.unsqueeze(1)], hidden_states_length_g)
                 feature_penalty = 0
                 #dists are (object, std) pairs.
                 #penalizing z-scores of gen from real distribution
                 #Note that the model could not do anything to r[1] by optimizing G.
                 for r, f in zip(dists_d, dists_g):
                     feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
-    
+                
                 if args.g_optim == 'boundary_seeking':
                     target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
                 else:
@@ -986,7 +1020,7 @@ if __name__ == '__main__':
                 
                 fp_raw = NP.sqrt(tonumpy(feature_penalty))
                 fp_lambda_grad = fp_raw 
-                
+                '''
                 if fp_lambda_grad  * lambda_fp > 100:
                     lambda_fp *= .2
                 if fp_lambda_grad  * lambda_fp > 10:
@@ -997,7 +1031,7 @@ if __name__ == '__main__':
                     lambda_fp *= 2
                 if lambda_fp > 1:
                     lambda_fp = 1
-                
+                '''
                 _loss = loss.mean()
                 opt_g.zero_grad()
                 _loss.backward(retain_graph=True)
@@ -1061,3 +1095,4 @@ if __name__ == '__main__':
                     T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                     T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
             print 'G', gen_iter, tonumpy(_loss), tonumpy(feature_penalty), lambda_fp, Timer.get('train_g')
+        gencatchup = 1
