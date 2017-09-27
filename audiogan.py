@@ -332,15 +332,18 @@ class conv_res_bottleneck_no_relu(NN.Module):
 class deconv_layer(NN.Module):
     def __init__(self,infilters, outfilters, kernel, stride, relu=True):
         NN.Module.__init__(self)
-        self.deconv = weight_norm(NN.ConvTranspose1d(infilters, outfilters, kernel-1, stride=stride, padding=stride-1),['weight','bias'])
         if relu:
+            self.deconv = weight_norm(NN.ConvTranspose1d(infilters, outfilters, kernel-1, stride=stride, padding=stride-1),['weight','bias'])
             self.relu = NN.LeakyReLU()
         else:
+            self.deconv = NN.ConvTranspose1d(infilters, outfilters, kernel-1, stride=stride, padding=stride-1)
             self.relu = False
     def forward(self, x):
         d = self.deconv(x)
         if self.relu:
             d = self.relu(d)
+        else:
+            d = d * 100
         return d
 class deconv_unpool_residual(NN.Module):
     def __init__(self,infilters, outfilters, kernel, stride):
@@ -459,8 +462,8 @@ class Generator(NN.Module):
                  noise_size=100,
                  state_size=1024,
                  num_layers=1,
-                 cnn_struct = [[11, 5, 600],[3, 1, 600],[11, 5, 400],[3, 1, 400],
-                               [5, 2, 300],[3, 1, 200],[5, 2, 200],[3, 1, 200],[5, 2, 100],[3, 1, 1]]#,['unpool', 5, 80]
+                 cnn_struct = [[11, 5, 1024],[3, 1, 1024],[11, 5, 512],[3, 1, 512],
+                               [5, 2, 256],[3, 1, 256],[5, 2, 128],[3, 1, 128],[5, 2, 64],[3, 1, 1]]#,['unpool', 5, 80]
                  ):
         NN.Module.__init__(self)
         self._frame_size = frame_size
@@ -484,7 +487,6 @@ class Generator(NN.Module):
         for idx, layer in enumerate(cnn_struct):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
             if idx < len(cnn_struct)-1:
-                outfilters = outfilters * 10
                 deconv = deconv_layer(infilters, outfilters, kernel, stride)
             else:
                 deconv = deconv_layer(infilters, outfilters, kernel, stride, relu=False)
@@ -603,7 +605,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[11,5,64],[5,2,128],[5,2,256]]):
+                 cnn_struct = [[11,5,64],[5,2,128],[11,5,512],[5,2,1024]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -682,7 +684,7 @@ class Discriminator(NN.Module):
         return classifier_out, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=3, type=int)
+parser.add_argument('--critic_iter', default=100, type=int)
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
@@ -714,7 +716,7 @@ args.conditional = True
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-lambda_fp = .1
+lambda_fp = 100
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
     modelnameload = None
@@ -940,8 +942,14 @@ if __name__ == '__main__':
                     )
 
             print 'D', epoch, dis_iter, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
-            if acc_d > .97 and acc_g > .97:
-                gencatchup = 10#Right now, running generator twice crashes system.
+            if acc_d > .8 and acc_g > .8:
+                gencatchup = 5
+            if acc_d > .9 and acc_g > .9:
+                gencatchup = 10
+            if acc_d > .95 and acc_g > .95:
+                gencatchup = 20
+            if acc_d > .98 and acc_g > .98:
+                gencatchup = 30
             if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
 
