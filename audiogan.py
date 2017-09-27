@@ -460,7 +460,7 @@ class Generator(NN.Module):
                  state_size=1024,
                  num_layers=1,
                  cnn_struct = [[11, 5, 600],[3, 1, 600],[11, 5, 400],[3, 1, 400],
-                               [5, 2, 300],[3, 1, 200],[5, 2, 100],[3, 1, 100],[5, 2, 50],[3, 1, 1]]#,['unpool', 5, 80]
+                               [5, 2, 300],[3, 1, 200],[5, 2, 200],[3, 1, 200],[5, 2, 100],[3, 1, 1]]#,['unpool', 5, 80]
                  ):
         NN.Module.__init__(self)
         self._frame_size = frame_size
@@ -484,6 +484,7 @@ class Generator(NN.Module):
         for idx, layer in enumerate(cnn_struct):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
             if idx < len(cnn_struct)-1:
+                outfilters = outfilters * 10
                 deconv = deconv_layer(infilters, outfilters, kernel, stride)
             else:
                 deconv = deconv_layer(infilters, outfilters, kernel, stride, relu=False)
@@ -681,7 +682,7 @@ class Discriminator(NN.Module):
         return classifier_out, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=10, type=int)
+parser.add_argument('--critic_iter', default=3, type=int)
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
@@ -939,17 +940,17 @@ if __name__ == '__main__':
                     )
 
             print 'D', epoch, dis_iter, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
-            if acc_d == 1 and acc_g == 1:
-                gencatchup = 1#Right now, running generator twice crashes system.
+            if acc_d > .97 and acc_g > .97:
+                gencatchup = 10#Right now, running generator twice crashes system.
             if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
 
-        for p in param_g:
-            p.requires_grad = True
-        for p in param_d:
-            p.requires_grad = False
         #real_data, real_len = last_real_raw[0], last_real_raw[1]
         for _ in range(gencatchup):
+            for p in param_g:
+                p.requires_grad = True
+            for p in param_d:
+                p.requires_grad = False
             gen_iter += 1
             _, _, real_data, real_len, _, _, _ = dataloader.next()
             noise = tovar(RNG.randn(*real_data.shape) * args.noisescale)
@@ -1018,20 +1019,6 @@ if __name__ == '__main__':
                 reward = (reward - baseline).unsqueeze(1) * weight_r.data
     
                 
-                fp_raw = NP.sqrt(tonumpy(feature_penalty))
-                fp_lambda_grad = fp_raw 
-                '''
-                if fp_lambda_grad  * lambda_fp > 100:
-                    lambda_fp *= .2
-                if fp_lambda_grad  * lambda_fp > 10:
-                    lambda_fp *= .9
-                if fp_lambda_grad  * lambda_fp < .1:
-                    lambda_fp *= 1.1
-                if fp_lambda_grad  * lambda_fp < .01:
-                    lambda_fp *= 2
-                if lambda_fp > 1:
-                    lambda_fp = 1
-                '''
                 _loss = loss.mean()
                 opt_g.zero_grad()
                 _loss.backward(retain_graph=True)
