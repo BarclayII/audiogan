@@ -432,13 +432,13 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].view(batch_size, output_size)
 
-def MMD_k(x, xp,s=[1e-5, 1e-4,1e-3, 1e-2, 1e-1, 1]):
+def MMD_k(x, xp,s=[1e-4, 1e-2, 1]):
     return sum([T.sum(T.exp(-1./(2.*si) * (x - xp)**2 )) for si in s])
 
 def MMD_single(feature_map_d, feature_map_g):
     feature_penalty = MMD_k(feature_map_g.unsqueeze(0),feature_map_d.unsqueeze(1))/(len(feature_map_d)*len(feature_map_g))
     return feature_penalty
-            
+
 
 def fp_MMD(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_states_length_g):
     feature_penalty = 0
@@ -448,7 +448,7 @@ def fp_MMD(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_stat
     for s_idx in range(num_samples):
         for l_idx in range(num_layers):
             num_feature_maps = num_feature_maps_per_layer[l_idx]
-            feature_idxes = T.multinomial(T.ones(num_feature_maps), num_feature_maps/5)
+            feature_idxes = T.multinomial(T.ones(num_feature_maps), num_feature_maps/10)
             for fm in feature_idxes:
                 feature_map_d = hidden_states_d[l_idx][s_idx,fm,:tonumpy(hidden_states_length_d[l_idx][s_idx])[0]]
                 feature_map_g = hidden_states_g[l_idx][s_idx,fm,:tonumpy(hidden_states_length_g[l_idx][s_idx])[0]]
@@ -632,7 +632,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[11,5,64],[5,2,128],[11,5,512],[5,2,1024]]):
+                 cnn_struct = [[11,5,32],[5,2,64],[11,5,256],[5,2,512]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
