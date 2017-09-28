@@ -432,7 +432,7 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].view(batch_size, output_size)
 
-def MMD_k(x, xp,s=[1e-4, 1e-2, 1, 1e1]):
+def MMD_k(x, xp,s=[1e-5, 1e-4,1e-3, 1e-2, 1e-1, 1]):
     return sum([T.sum(T.exp(-1./(2.*si) * (x - xp)**2 )) for si in s])
 
 def MMD_single(feature_map_d, feature_map_g):
@@ -453,7 +453,7 @@ def fp_MMD(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_stat
                 feature_map_d = hidden_states_d[l_idx][s_idx,fm,:tonumpy(hidden_states_length_d[l_idx][s_idx])[0]]
                 feature_map_g = hidden_states_g[l_idx][s_idx,fm,:tonumpy(hidden_states_length_g[l_idx][s_idx])[0]]
                 feature_penalty += MMD_single(feature_map_d, feature_map_g)
-    return feature_penalty/100
+    return feature_penalty/10000
     
     
     
@@ -591,8 +591,8 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = self.relu(self.proj(lstm_h[-1]))
-            logit_s_t = self.stopper(lstm_h[-1]) - .5
+            x_t = self.proj(lstm_h[-1]).tanh_()#self.relu(self.proj(lstm_h[-1]))
+            logit_s_t = self.stopper(lstm_h[-1]) - 4
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -612,7 +612,7 @@ class Generator(NN.Module):
 
         x = T.cat(x_list, 1)
         s = T.stack(s_list, 1)
-        if 1:
+        if 0:
             x = x.unsqueeze(1)
             #print('start', x.size())
             x = x.view(batch_size, -1, 200)
@@ -625,8 +625,8 @@ class Generator(NN.Module):
             #x = x.permute(0,2,1)
             x = x.squeeze(1)
         #print('end', x.size())
-        return (self.tanh(x) * 2.4) -1.2, s, stop_list, tovar(length * frame_size)
-
+        #(self.tanh(x) * 2.4) -1.2
+        return x, s, stop_list, tovar(length * frame_size)
 
 class Discriminator(NN.Module):
     def __init__(self,
@@ -712,7 +712,7 @@ class Discriminator(NN.Module):
         return classifier_out, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=1, type=int)
+parser.add_argument('--critic_iter', default=100, type=int)
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
@@ -969,7 +969,6 @@ if __name__ == '__main__':
                     )
 
             print 'D', epoch, dis_iter, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
-            '''
             if acc_d > .8 and acc_g > .8:
                 gencatchup = 3
             if acc_d > .9 and acc_g > .9:
@@ -978,7 +977,6 @@ if __name__ == '__main__':
                 gencatchup = 10
             if acc_d > .98 and acc_g > .98:
                 gencatchup = 15
-            '''
             if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
 
