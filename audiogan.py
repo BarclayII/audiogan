@@ -1102,7 +1102,7 @@ if __name__ == '__main__':
                         )
                 opt_g.step()
     
-            if gen_iter % 20 == 0:
+            if gen_iter % 2 == 0:#20 == 0:
                 embed_g = e_g(cseq_fixed, clen_fixed)
                 fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
                 fake_data, fake_len = tonumpy(fake_data, fake_len)
@@ -1111,7 +1111,7 @@ if __name__ == '__main__':
                     fake_sample = fake_data[batch, :fake_len[batch]]
                     add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter)
     
-                if gen_iter % 500 == 0:
+                if gen_iter % 10 == 0:#500 == 0:
                     for batch in range(batch_size):
                         fake_sample = fake_data[batch, :fake_len[batch]]
                         add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter)
