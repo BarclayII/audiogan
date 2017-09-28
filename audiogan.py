@@ -564,7 +564,7 @@ class Generator(NN.Module):
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.relu(self.proj(lstm_h[-1]))
-            logit_s_t = self.stopper(lstm_h[-1])
+            logit_s_t = self.stopper(lstm_h[-1]) - .5
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -692,8 +692,8 @@ parser.add_argument('--noisesize', type=int, default=100, help='noise vector siz
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
-parser.add_argument('--dgradclip', type=float, default=1)
-parser.add_argument('--ggradclip', type=float, default=1)
+parser.add_argument('--dgradclip', type=float, default=.1)
+parser.add_argument('--ggradclip', type=float, default=.1)
 parser.add_argument('--dlr', type=float, default=1e-4)
 parser.add_argument('--glr', type=float, default=1e-3)
 parser.add_argument('--modelname', type=str, default = '')
@@ -943,13 +943,13 @@ if __name__ == '__main__':
 
             print 'D', epoch, dis_iter, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
             if acc_d > .8 and acc_g > .8:
-                gencatchup = 5
+                gencatchup = 3
             if acc_d > .9 and acc_g > .9:
-                gencatchup = 10
+                gencatchup = 5
             if acc_d > .95 and acc_g > .95:
-                gencatchup = 20
+                gencatchup = 10
             if acc_d > .98 and acc_g > .98:
-                gencatchup = 30
+                gencatchup = 15
             if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
 
@@ -974,7 +974,7 @@ if __name__ == '__main__':
                 nframes = div_roundup(maxlen, g._frame_size)
                 
                 z = adversarially_sample_z(batch_size, nframes, g._noise_size, maxlen, embed_g, args.noisescale, embed_d, real_data, real_len, 
-                                           args.g_optim, args.framesize, scale=1e-2)
+                                           args.g_optim, args.framesize, scale=1e-4)
     
     
     
@@ -1040,7 +1040,7 @@ if __name__ == '__main__':
                 #loss = _loss
                 opt_g.zero_grad()
                 for i, fake_stop in enumerate(fake_stop_list):
-                    fake_stop.reinforce(0.1 * reward[:, i:i+1])
+                    fake_stop.reinforce(10*reward[:, i:i+1])
                 #opt_g.zero_grad()
                 #loss.backward(retain_graph=True)
                 for p in param_g:
