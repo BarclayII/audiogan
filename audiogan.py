@@ -106,17 +106,20 @@ def adversarially_sample_z(batch_size, nframes, _noise_size, maxlen, embed_g, no
     cls_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
     
     _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
+    '''
     dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
     dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
     dists_d += calc_dists([real_data.unsqueeze(1)], hidden_states_length_d)
     dists_g += calc_dists([fake_data.unsqueeze(1)], hidden_states_length_g)
+    '''
     feature_penalty = 0
     #dists are (object, std) pairs.
     #penalizing z-scores of gen from real distribution
     #Note that the model could not do anything to r[1] by optimizing G.
+    '''
     for r, f in zip(dists_d, dists_g):
         feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
-
+    '''
     if g_optim == 'boundary_seeking':
         target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
     else:
@@ -429,7 +432,16 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].view(batch_size, output_size)
 
+def MMD_k(x, xp,s=[1e-4, 1e-2, 1, 1e1]):
+    return sum([T.sum(T.exp(-1./(2.*si) * (x - xp)**2 )) for si in s])
+
+def MMD_single(feature_map_d, feature_map_g):
+    feature_penalty = MMD_k(feature_map_g.unsqueeze(0),feature_map_d.unsqueeze(1))/(len(feature_map_d)*len(feature_map_g))
+    return feature_penalty
+            
+
 def fp_MMD(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_states_length_g):
+    feature_penalty = 0
     num_samples = hidden_states_d[0].size()[0]
     num_layers = len(hidden_states_d)
     num_feature_maps_per_layer = [d.size()[1] for d in hidden_states_d]
@@ -438,7 +450,10 @@ def fp_MMD(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_stat
             num_feature_maps = num_feature_maps_per_layer[l_idx]
             feature_idxes = T.multinomial(T.ones(num_feature_maps), num_feature_maps/5)
             for fm in feature_idxes:
-    return a
+                feature_map_d = hidden_states_d[l_idx][s_idx,fm,:tonumpy(hidden_states_length_d[l_idx][s_idx])[0]]
+                feature_map_g = hidden_states_g[l_idx][s_idx,fm,:tonumpy(hidden_states_length_g[l_idx][s_idx])[0]]
+                feature_penalty += MMD_single(feature_map_d, feature_map_g)
+    return feature_penalty/100
     
     
     
@@ -697,7 +712,7 @@ class Discriminator(NN.Module):
         return classifier_out, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=100, type=int)
+parser.add_argument('--critic_iter', default=1, type=int)
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
@@ -954,6 +969,7 @@ if __name__ == '__main__':
                     )
 
             print 'D', epoch, dis_iter, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
+            '''
             if acc_d > .8 and acc_g > .8:
                 gencatchup = 3
             if acc_d > .9 and acc_g > .9:
@@ -962,6 +978,7 @@ if __name__ == '__main__':
                 gencatchup = 10
             if acc_d > .98 and acc_g > .98:
                 gencatchup = 15
+            '''
             if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
 
