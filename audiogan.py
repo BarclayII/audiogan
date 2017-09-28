@@ -562,7 +562,7 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = self.relu(self.proj(lstm_h[-1]))
+            x_t = self.proj(lstm_h[-1]).tanh_()#self.relu(self.proj(lstm_h[-1]))
             logit_s_t = self.stopper(lstm_h[-1]) - 4
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
@@ -583,7 +583,7 @@ class Generator(NN.Module):
 
         x = T.cat(x_list, 1)
         s = T.stack(s_list, 1)
-        if 1:
+        if 0:
             x = x.unsqueeze(1)
             #print('start', x.size())
             x = x.view(batch_size, -1, 200)
@@ -596,7 +596,7 @@ class Generator(NN.Module):
             #x = x.permute(0,2,1)
             x = x.squeeze(1)
         #print('end', x.size())
-        return (self.tanh(x) * 2.4) -1.2, s, stop_list, tovar(length * frame_size)
+        return x, s, stop_list, tovar(length * frame_size)
 
 
 class Discriminator(NN.Module):
@@ -617,9 +617,7 @@ class Discriminator(NN.Module):
         for idx, layer in enumerate(cnn_struct):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
 
-            conv = weight_norm(
-                NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2),
-                ['weight','bias'])
+            conv = NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2)
             self.cnn.append(NN.DataParallel(conv))
 
             infilters = outfilters
@@ -637,9 +635,9 @@ class Discriminator(NN.Module):
                 Residual(state_size),
             ))
         self.classifier = NN.DataParallel(NN.Sequential(
-                weight_norm(NN.Linear(state_size, state_size // 2),['weight','bias']),
+                NN.Linear(state_size, state_size // 2),
                 NN.LeakyReLU(),
-                weight_norm(NN.Linear(state_size // 2, 1),['weight','bias'])
+                NN.Linear(state_size // 2, 1)
                 ))
 
     def forward(self, x, length, c, percent_used = 0.1):
@@ -691,10 +689,10 @@ parser.add_argument('--noisesize', type=int, default=100, help='noise vector siz
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
-parser.add_argument('--dgradclip', type=float, default=.1)
-parser.add_argument('--ggradclip', type=float, default=.1)
+parser.add_argument('--dgradclip', type=float, default=0)
+parser.add_argument('--ggradclip', type=float, default=0)
 parser.add_argument('--dlr', type=float, default=1e-4)
-parser.add_argument('--glr', type=float, default=1e-3)
+parser.add_argument('--glr', type=float, default=1e-4)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
