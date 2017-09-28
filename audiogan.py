@@ -3,7 +3,6 @@ from torch.nn import Parameter
 from functools import wraps
 
 import torch as T
-import gc
 import torch.nn as NN
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
@@ -843,7 +842,6 @@ if __name__ == '__main__':
         for j in range(args.critic_iter):
             dis_iter += 1
             with Timer.new('load', print_=False):
-                gc.collect()
                 epoch, batch_id, real_data, real_len, _, cs, cl = dataloader.next()
                 _, cs2, cl2, _, _ = dataset.pick_words(
                         batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
