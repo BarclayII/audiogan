@@ -563,7 +563,7 @@ class Generator(NN.Module):
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.relu(self.proj(lstm_h[-1]))
-            logit_s_t = self.stopper(lstm_h[-1]) - .5
+            logit_s_t = self.stopper(lstm_h[-1]) - 4
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -715,7 +715,7 @@ args.conditional = True
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-lambda_fp = 100
+lambda_fp = 10
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
     modelnameload = None
