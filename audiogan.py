@@ -625,7 +625,6 @@ class Generator(NN.Module):
             #x = x.permute(0,2,1)
             x = x.squeeze(1)
         #print('end', x.size())
-        #(self.tanh(x) * 2.4) -1.2
         return x, s, stop_list, tovar(length * frame_size)
 
 class Discriminator(NN.Module):
@@ -646,9 +645,7 @@ class Discriminator(NN.Module):
         for idx, layer in enumerate(cnn_struct):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
 
-            conv = weight_norm(
-                NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2),
-                ['weight','bias'])
+            conv = NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2)
             self.cnn.append(NN.DataParallel(conv))
 
             infilters = outfilters
@@ -666,9 +663,9 @@ class Discriminator(NN.Module):
                 Residual(state_size),
             ))
         self.classifier = NN.DataParallel(NN.Sequential(
-                weight_norm(NN.Linear(state_size, state_size // 2),['weight','bias']),
+                NN.Linear(state_size, state_size // 2),
                 NN.LeakyReLU(),
-                weight_norm(NN.Linear(state_size // 2, 1),['weight','bias'])
+                NN.Linear(state_size // 2, 1)
                 ))
 
     def forward(self, x, length, c, percent_used = 0.1):
@@ -720,10 +717,10 @@ parser.add_argument('--noisesize', type=int, default=100, help='noise vector siz
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
-parser.add_argument('--dgradclip', type=float, default=.1)
-parser.add_argument('--ggradclip', type=float, default=.1)
+parser.add_argument('--dgradclip', type=float, default=0)
+parser.add_argument('--ggradclip', type=float, default=0)
 parser.add_argument('--dlr', type=float, default=1e-4)
-parser.add_argument('--glr', type=float, default=1e-3)
+parser.add_argument('--glr', type=float, default=1e-4)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
@@ -744,7 +741,7 @@ args.conditional = True
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-lambda_fp = 100
+lambda_fp = 10
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
     modelnameload = None
@@ -1100,7 +1097,7 @@ if __name__ == '__main__':
                         )
                 opt_g.step()
     
-            if gen_iter % 2 == 0:#20 == 0:
+            if gen_iter % 20 == 0:
                 embed_g = e_g(cseq_fixed, clen_fixed)
                 fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
                 fake_data, fake_len = tonumpy(fake_data, fake_len)
@@ -1109,7 +1106,7 @@ if __name__ == '__main__':
                     fake_sample = fake_data[batch, :fake_len[batch]]
                     add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter)
     
-                if gen_iter % 10 == 0:#500 == 0:
+                if gen_iter % 500 == 0:
                     for batch in range(batch_size):
                         fake_sample = fake_data[batch, :fake_len[batch]]
                         add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter)
