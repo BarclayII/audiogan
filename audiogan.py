@@ -173,16 +173,31 @@ def check_grad(params):
 
 
 def clip_grad(params, clip_norm):
-    if clip_norm == 0:
-        return
     norm = 0
     for p in params:
         if p.grad is not None:
             _norm = T.norm(p.grad.data)
             norm += _norm
-            if _norm > clip_norm:
+            if clip_norm and _norm > clip_norm:
                 p.grad.data /= (_norm / clip_norm)
     return norm
+
+def init_lstm(lstm):
+    for name, param in lstm.named_parameters():
+        if name.startswith('weight_ih'):
+            s = NP.sqrt(6. / (param.size()[0] + param.size()[1]))
+            p = T.Tensor(RNG.uniform(low=-s, high=s, size=param.size())).cuda()
+            param.data.copy_(p)
+        elif name.startswith('weight_hh'):
+            shape = (param.size()[0], param.size()[1])
+            a = RNG.normal(0, 1, shape)
+            u, _, v = NP.linalg.svd(a, full_matrices=False)
+            q = u if u.shape == shape else v
+            q = q.reshape(shape)
+            p = T.Tensor(q).cuda()
+            param.data.copy_(p)
+        elif name.startswith('bias'):
+            param.data.fill_(0)
 
 
 class Residual(NN.Module):
@@ -198,8 +213,8 @@ class Residual(NN.Module):
 
 class Embedder(NN.Module):
     def __init__(self,
-                 output_size=100,
-                 char_embed_size=50,
+                 output_size=128,
+                 char_embed_size=128,
                  num_layers=1,
                  num_chars=256,
                  ):
@@ -215,6 +230,7 @@ class Embedder(NN.Module):
                 num_layers,
                 bidirectional=True,
                 )
+        init_lstm(self.rnn)
 
     def forward(self, chars, length):
         num_layers = self._num_layers
@@ -228,7 +244,7 @@ class Embedder(NN.Module):
                 )
         embed, (h, c) = dynamic_rnn(self.rnn, embed_seq, length, initial_state)
         h = h.permute(1, 0, 2)
-        return h[:, -2:].view(batch_size, output_size)
+        return h[:, -2:].contiguous().view(batch_size, output_size)
 
 def calc_dists(hidden_states, hidden_state_lengths):
     def kurt(x, dim):
@@ -268,14 +284,16 @@ class Generator(NN.Module):
         self._num_layers = num_layers
 
         self.rnn = NN.ModuleList()
+        lstm = NN.LSTMCell(frame_size + embed_size + noise_size, state_size)
+        init_lstm(lstm)
         self.rnn.append(
-                NN.DataParallel(weight_norm(
-                    NN.LSTMCell(frame_size + embed_size + noise_size, state_size), 
+                NN.DataParallel(weight_norm(lstm, 
                     ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih'])))
         for _ in range(1, num_layers):
+            lstm = NN.LSTMCell(state_size, state_size)
+            init_lstm(lstm)
             self.rnn.append(
-                    NN.DataParallel(weight_norm(
-                        NN.LSTMCell(state_size, state_size),
+                    NN.DataParallel(weight_norm(lstm,
                         ['weight_ih', 'weight_hh', 'bias_hh', 'bias_ih'])))
         self.proj = NN.DataParallel(weight_norm(NN.Linear(state_size, frame_size), ['weight', 'bias']))
         self.stopper = NN.DataParallel(weight_norm(NN.Linear(state_size, 1), ['weight', 'bias']))
@@ -335,13 +353,24 @@ class Generator(NN.Module):
 
         return x, s, stop_list, tovar(length * frame_size)
 
+_cnn_struct = [
+        [7, 2, 128],
+        [7, 2, 128],
+        [7, 2, 128],
+        [7, 2, 256],
+        [7, 2, 256],
+        [7, 2, 256],
+        [7, 2, 512],
+        [7, 2, 512],
+        [7, 2, 512],
+        ]
 
 class Discriminator(NN.Module):
     def __init__(self,
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[7, 3, 64], [7, 3, 64], [7, 3, 128], [7, 3, 128], [7, 3, 256]]):
+                 cnn_struct=_cnn_struct):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -349,6 +378,7 @@ class Discriminator(NN.Module):
         self._cnn_struct = cnn_struct
         
         self.cnn = NN.ModuleList()
+        self.projector = NN.ModuleList()
         self.cnn_struct = cnn_struct
         infilters = 1
         for idx, layer in enumerate(cnn_struct):
@@ -356,6 +386,8 @@ class Discriminator(NN.Module):
 
             conv = NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2)
             self.cnn.append(NN.DataParallel(conv))
+            proj = NN.Linear(embed_size, outfilters)
+            self.projector.append(NN.DataParallel(proj))
 
             infilters = outfilters
         frame_size = outfilters
@@ -367,12 +399,18 @@ class Discriminator(NN.Module):
                 num_layers,
                 bidirectional=True,
                 )
+        init_lstm(self.rnn)
         self.residual_net = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
                 Residual(state_size),
                 Residual(state_size),
                 Residual(state_size)
             ))
+        self.classifier_word = NN.DataParallel(NN.Sequential(
+                NN.Linear(state_size, state_size // 2),
+                NN.LeakyReLU(),
+                NN.Linear(state_size // 2, 1),
+                ))
         self.classifier = NN.DataParallel(NN.Sequential(
                 NN.Linear(state_size, state_size // 2),
                 NN.LeakyReLU(),
@@ -396,8 +434,9 @@ class Discriminator(NN.Module):
         cnn_output_lengths = []
         cnn_output = xold.unsqueeze(1)
         nframes = length
-        for cnn_layer, (_, stride, _) in zip(self.cnn, self.cnn_struct):
-            cnn_output = F.leaky_relu(cnn_layer(cnn_output))
+        cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
+        for cnn_layer, proj, (_, stride, _) in zip(self.cnn, self.projector, self.cnn_struct):
+            cnn_output = F.leaky_relu(cnn_layer(cnn_output) + proj(c).unsqueeze(2))
             nframes = (nframes + stride - 1) / stride
             cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
             cnn_outputs.append(cnn_output)
@@ -415,8 +454,9 @@ class Discriminator(NN.Module):
         conv_out = lstm_out.view(batch_size * max_nframes, state_size)
         res_out = self.residual_net(conv_out)
         classifier_out = self.classifier(res_out).view(batch_size, max_nframes)
+        classifier_word = self.classifier_word(res_out).view(batch_size, max_nframes)
         
-        return classifier_out, cnn_outputs, cnn_output_lengths, nframes
+        return classifier_out, classifier_word, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=100, type=int)
@@ -445,6 +485,7 @@ parser.add_argument('--noisescale', type=float, default=0.1)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
+parser.add_argument('--pretrain_d', type=int, default=0)
 
 args = parser.parse_args()
 args.conditional = True
@@ -559,7 +600,26 @@ param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
 opt_g = T.optim.RMSprop(param_g, lr=args.glr)
-opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
+opt_d = T.optim.Adam(param_d, lr=args.dlr)
+
+def discriminate(d, data, length, embed, target, target_w, real, real_w):
+    cls, cls_w, _, _, nframes = d(data, length, embed)
+    target = tovar(T.ones(*(cls.size())) * target)
+    target_w = tovar(T.ones(*(cls_w.size())) * target_w)
+    weight = length_mask(cls.size(), nframes)
+    loss_c = binary_cross_entropy_with_logits_per_sample(cls, target, weight=weight) / nframes.float()
+    loss_c = loss_c.mean()
+    loss_w = binary_cross_entropy_with_logits_per_sample(cls_w, target_w, weight=weight) / nframes.float()
+    loss_w = loss_w.mean()
+    correct = ((cls.data > 0) if real else (cls.data < 0)).float() * weight.data
+    correct = correct.sum()
+    correct_w = ((cls_w.data > 0) if real_w else (cls_w.data < 0)).float() * weight.data
+    correct_w = correct_w.sum()
+    num = weight.data.sum()
+    acc = correct / num
+    acc_w = correct_w / num
+    return cls, cls_w, nframes, target, target_w, weight, loss_c, loss_w, loss_c + loss_w, acc, acc_w
+
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
@@ -568,6 +628,104 @@ if __name__ == '__main__':
             e_g = T.load('%s-eg-%05d' % (modelnameload, args.loaditerations))
             e_d = T.load('%s-ed-%05d' % (modelnameload, args.loaditerations))
 
+    if not args.pretrain_d:
+        print 'Pretraining D'
+        for p in param_g:
+            p.requires_grad = False
+        for p in param_d:
+            p.requires_grad = True
+        for j in range(args.critic_iter):
+            with Timer.new('load', print_=False):
+                epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
+                _, _, _wrong_data, _wrong_len, _, _, _ = dataloader.next()
+                ck2, _cs2, _cl2, _, _ = dataset.pick_words(
+                        batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
+
+            dis_iter += 1
+
+            with Timer.new('train_d', print_=False):
+                real_data = tovar(_real_data)
+                real_len = tovar(_real_len).long()
+                wrong_data = tovar(_wrong_data)
+                wrong_len = tovar(_wrong_len).long()
+                cs = tovar(_cs).long()
+                cl = tovar(_cl).long()
+                embed_d = e_d(cs, cl)
+                cs2 = tovar(_cs2).long()
+                cl2 = tovar(_cl2).long()
+                embed_d2 = e_d(cs2, cl2)
+
+                _, cls_d, _, _, _, _, _, loss_d, _, _, acc_d = discriminate(d, real_data, real_len, embed_d, 1, 1, True, True)
+                _, cls_d_wrong, _, _, _, _, _, loss_d_wrong, _, _, acc_d_wrong = discriminate(d, wrong_data, wrong_len, embed_d2, 0, 0, False, False)
+
+                loss = loss_d + loss_d_wrong
+                opt_d.zero_grad()
+                loss.backward()
+                check_grad(param_d)
+                e_d_grad_norm = sum(T.norm(p.grad.data) ** 2 for p in e_d.parameters() if p.grad is not None) ** 0.5
+                d_grad_norm = clip_grad(param_d, args.dgradclip)
+                opt_d.step()
+
+            loss_d, loss, cls_d, cls_d_wrong = tonumpy(loss_d, loss, cls_d, cls_d_wrong)
+
+            d_train_writer.add_summary(
+                    TF.Summary(
+                        value=[
+                            TF.Summary.Value(tag='loss_d', simple_value=loss_d),
+                            TF.Summary.Value(tag='loss', simple_value=loss),
+                            TF.Summary.Value(tag='cls_d/mean', simple_value=cls_d.mean()),
+                            TF.Summary.Value(tag='cls_d/std', simple_value=cls_d.std()),
+                            TF.Summary.Value(tag='cls_d_wrong/mean', simple_value=cls_d_wrong.mean()),
+                            TF.Summary.Value(tag='cls_d_wrong/std', simple_value=cls_d_wrong.std()),
+                            TF.Summary.Value(tag='acc_d', simple_value=acc_d),
+                            TF.Summary.Value(tag='acc_d_wrong', simple_value=acc_d_wrong),
+                            TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
+                            ]
+                        ),
+                    dis_iter
+                    )
+
+            # Validation
+            epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
+            _, _, _wrong_data, _wrong_len, _, _, _ = dataloader.next()
+            ck2, _cs2, _cl2, _, _ = dataset.pick_words(
+                    batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
+            real_data = tovar(_real_data)
+            real_len = tovar(_real_len).long()
+            wrong_data = tovar(_wrong_data)
+            wrong_len = tovar(_wrong_len).long()
+            cs = tovar(_cs).long()
+            cl = tovar(_cl).long()
+            embed_d = e_d(cs, cl)
+            cs2 = tovar(_cs2).long()
+            cl2 = tovar(_cl2).long()
+            embed_d2 = e_d(cs2, cl2)
+
+            _, cls_d, _, _, _, _, _, loss_d_val, _, _, acc_d_val = discriminate(d, real_data, real_len, embed_d, 1, 1, True, True)
+            _, cls_d_wrong, _, _, _, _, _, loss_d_wrong_val, _, _, acc_d_wrong_val = discriminate(d, wrong_data, wrong_len, embed_d2, 0, 0, False, False)
+            loss_val = tonumpy(loss_d_val + loss_d_wrong_val)[0]
+
+            d_train_writer.add_summary(
+                    TF.Summary(
+                        value=[
+                            TF.Summary.Value(tag='loss_val', simple_value=loss_val),
+                            TF.Summary.Value(tag='acc_d_val', simple_value=acc_d_val),
+                            TF.Summary.Value(tag='acc_d_wrong_val', simple_value=acc_d_wrong_val),
+                            ]
+                        ),
+                    dis_iter
+                    )
+
+            print 'D', epoch, batch_id, loss, loss_val, 'Train Acc:', acc_d, acc_d_wrong, 'Val Acc:', acc_d_val, acc_d_wrong_val, 'Grad Norms:', e_d_grad_norm, d_grad_norm, 'Time:', Timer.get('load'), Timer.get('train_d')
+            if dis_iter % 10000 == 0:
+                T.save(d, '%s-dis-pretrain-%05d' % (modelnamesave, dis_iter))
+                T.save(e_d, '%s-ed-pretrain-%05d' % (modelnamesave, dis_iter))
+    else:
+        if modelnameload:
+            if len(modelnameload) > 0:
+                d = T.load('%s-dis-pretrain-%05d' % (modelnameload, args.pretrain_d))
+                e_d = T.load('%s-ed-pretrain-%05d' % (modelnameload, args.pretrain_d))
+
     while True:
         _epoch = epoch
 
@@ -575,87 +733,79 @@ if __name__ == '__main__':
             p.requires_grad = False
         for p in param_d:
             p.requires_grad = True
+        with Timer.new('load', print_=False):
+            epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
+            _, _cs2, _cl2, _, _ = dataset.pick_words(
+                    batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
         for j in range(args.critic_iter):
             dis_iter += 1
-            with Timer.new('load', print_=False):
-                epoch, batch_id, real_data, real_len, _, cs, cl = dataloader.next()
-                _, cs2, cl2, _, _ = dataset.pick_words(
-                        batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
 
             with Timer.new('train_d', print_=False):
-                noise = tovar(RNG.randn(*real_data.shape) * args.noisescale)
-                real_data = tovar(real_data) + noise
-                real_len = tovar(real_len).long()
-                cs = tovar(cs).long()
-                cl = tovar(cl).long()
+                noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
+                real_data = tovar(_real_data) + noise
+                real_len = tovar(_real_len).long()
+                cs = tovar(_cs).long()
+                cl = tovar(_cl).long()
+                cs2 = tovar(_cs2).long()
+                cl2 = tovar(_cl2).long()
 
                 embed_d = e_d(cs, cl)
-                cls_d, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
-                target = tovar(T.ones(*(cls_d.size())) * 0.9)
-                weight = length_mask(cls_d.size(), nframes_d)
-                loss_d = binary_cross_entropy_with_logits_per_sample(cls_d, target, weight=weight) / nframes_d.float()
-                loss_d = loss_d.mean()
-                correct_d = ((cls_d.data > 0).float() * weight.data).sum()
-                num_d = weight.data.sum()
+                embed_g2 = e_g(cs2, cl2)
+                embed_d2 = e_d(cs2, cl2)
 
-                cs2 = tovar(cs2).long()
-                cl2 = tovar(cl2).long()
-                embed_g = e_g(cs2, cl2)
-                embed_d = e_d(cs2, cl2)
-                fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
+                cls_d, cls_d_w, _, _, _, _, _, _, loss_d, acc_d, acc_d_w = \
+                        discriminate(d, real_data, real_len, embed_d, 0.9, 1, True, True)
+                cls_d_x, cls_d_w_x, _, _, _, _, _, _, loss_d_x, acc_d_x, acc_d_w_x = \
+                        discriminate(d, real_data, real_len, embed_d2, 0.9, 0, True, False)
+
+                fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g2)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data = tovar((fake_data + noise).data)
                 fake_data.requires_grad = True
-                cls_g, _, _, nframes_g = d(fake_data, fake_len, embed_d)
+                cls_g, cls_g_w, _, _, _, _, _, _, loss_g, acc_g, acc_g_w = \
+                        discriminate(d, fake_data, fake_len, embed_d2, 0, 1, False, True)
+                cls_g_x, cls_g_w_x, _, _, _, _, _, _, loss_g_x, acc_g_x, acc_g_w_x = \
+                        discriminate(d, fake_data, fake_len, embed_d, 0, 0, False, False)
 
-                target = tovar(T.zeros(*(cls_g.size())))
-                weight = length_mask(cls_g.size(), nframes_g)
-                #feature_penalty = [T.pow(r - f,2).mean() for r, f in zip(dists_d, dists_g)]
-                loss_g = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-
-                # Check gradient w.r.t. generated output occasionally
-                grad = T.autograd.grad(loss_g, fake_data, grad_outputs=T.ones(loss_g.size()).cuda(), create_graph=True, retain_graph=True, only_inputs=True)[0]
-                norm = grad.norm(2, 1) ** 2
-                norm = (norm / nframes_g.float()).data
-                x_grad_norm = norm.mean()
-                d_train_writer.add_summary(
-                        TF.Summary(value=[TF.Summary.Value(tag='x_grad_norm', simple_value=x_grad_norm)]),
-                        dis_iter)
-
-                loss_g = loss_g.mean()
-                correct_g = ((cls_g.data < 0).float() * weight.data).sum()
-                num_g = weight.data.sum()
-                loss = loss_d + loss_g
+                loss = loss_d + loss_d_x + loss_g + loss_g_x
                 opt_d.zero_grad()
                 loss.backward()
                 check_grad(param_d)
                 d_grad_norm = clip_grad(param_d, args.dgradclip)
                 opt_d.step()
 
-            loss_d, loss_g, loss, cls_d, cls_g = tonumpy(loss_d, loss_g, loss, cls_d, cls_g)
-            acc_d = correct_d / num_d
-            acc_g = correct_g / num_g
+            loss_d, loss_d_x, loss_g, loss_g_x, loss, cls_d, cls_d_x, cls_g, cls_g_x = \
+                    tonumpy(loss_d, loss_d_x, loss_g, loss_g_x, loss, cls_d, cls_d_x, cls_g, cls_g_x)
             d_train_writer.add_summary(
                     TF.Summary(
                         value=[
                             TF.Summary.Value(tag='loss_d', simple_value=loss_d),
+                            TF.Summary.Value(tag='loss_d_x', simple_value=loss_d_x),
                             TF.Summary.Value(tag='loss_g', simple_value=loss_g),
+                            TF.Summary.Value(tag='loss_g_x', simple_value=loss_g_x),
                             TF.Summary.Value(tag='loss', simple_value=loss),
                             TF.Summary.Value(tag='cls_d/mean', simple_value=cls_d.mean()),
                             TF.Summary.Value(tag='cls_d/std', simple_value=cls_d.std()),
+                            TF.Summary.Value(tag='cls_d_x/mean', simple_value=cls_d_x.mean()),
+                            TF.Summary.Value(tag='cls_d_x/std', simple_value=cls_d_x.std()),
                             TF.Summary.Value(tag='cls_g/mean', simple_value=cls_g.mean()),
                             TF.Summary.Value(tag='cls_g/std', simple_value=cls_g.std()),
+                            TF.Summary.Value(tag='cls_g_x/mean', simple_value=cls_g_x.mean()),
+                            TF.Summary.Value(tag='cls_g_x/std', simple_value=cls_g_x.std()),
                             TF.Summary.Value(tag='acc_d', simple_value=acc_d),
+                            TF.Summary.Value(tag='acc_d_x', simple_value=acc_d_x),
                             TF.Summary.Value(tag='acc_g', simple_value=acc_g),
+                            TF.Summary.Value(tag='acc_g_x', simple_value=acc_g_x),
                             TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
                             ]
                         ),
                     dis_iter
                     )
 
-            print 'D', epoch, batch_id, loss, acc_d, acc_g, Timer.get('load'), Timer.get('train_d')
+            accs = [acc_d, acc_d_x, acc_g, acc_g_x, acc_d_w, acc_d_w_x, acc_g_w, acc_g_w_x]
+            print 'D', epoch, batch_id, loss, accs, Timer.get('load'), Timer.get('train_d')
 
-            if acc_d > args.require_acc and acc_g > args.require_acc:
+            if all(_ > args.require_acc for _ in accs):
                 break
 
         gen_iter += 1
@@ -675,9 +825,8 @@ if __name__ == '__main__':
             noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
             fake_data += noise
             
-            cls_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
+            cls_g, cls_g_w, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
             
-            _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
             #dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
             #dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
             #feature_penalty = 0
@@ -691,10 +840,13 @@ if __name__ == '__main__':
                 target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
             else:
                 target = tovar(T.zeros(*(cls_g.size())))            
+            target_w = tovar(T.ones(*(cls_g_w.size())) * 1)
             weight = length_mask(cls_g.size(), nframes_g)
             nframes_max = (fake_len / args.framesize).data.max()
             weight_r = length_mask((batch_size, nframes_max), fake_len / args.framesize)
             loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
+            loss_w = binary_cross_entropy_with_logits_per_sample(cls_g_w, target_w, weight=weight) / nframes_g.float()
+            loss = loss + loss_w
 
             reward = -loss.data
             baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
