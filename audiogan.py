@@ -429,6 +429,20 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].view(batch_size, output_size)
 
+def fp_MMD(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_states_length_g):
+    num_samples = hidden_states_d[0].size()[0]
+    num_layers = len(hidden_states_d)
+    num_feature_maps_per_layer = [d.size()[1] for d in hidden_states_d]
+    for s_idx in range(num_samples):
+        for l_idx in range(num_layers):
+            num_feature_maps = num_feature_maps_per_layer[l_idx]
+            feature_idxes = T.multinomial(T.ones(num_feature_maps), num_feature_maps/5)
+            for fm in feature_idxes:
+    return a
+    
+    
+    
+
 def fourth_moment(v):
     v_mean = v.mean(0)
     fourth_var = (((v -v_mean.unsqueeze(0))**4).sum(0))**(1/4)
@@ -958,12 +972,10 @@ if __name__ == '__main__':
             for p in param_d:
                 p.requires_grad = False
             gen_iter += 1
-            _, _, real_data, real_len, _, _, _ = dataloader.next()
+            _, _, real_data, real_len, _, cs, cl = dataloader.next()
             noise = tovar(RNG.randn(*real_data.shape) * args.noisescale)
             real_data = tovar(real_data) + noise
             real_len = tovar(real_len).long()
-            _, cs, cl, _, _ = dataset.pick_words(
-                    batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
             with Timer.new('train_g', print_=False):
                 cs = tovar(cs).long()
                 cl = tovar(cl).long()
@@ -983,6 +995,8 @@ if __name__ == '__main__':
                 cls_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
                 
                 _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
+                feature_penalty = fp_MMD(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_states_length_g)
+                '''
                 dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
                 dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
                 dists_d += calc_dists([real_data.unsqueeze(1)], hidden_states_length_d)
@@ -993,6 +1007,7 @@ if __name__ == '__main__':
                 #Note that the model could not do anything to r[1] by optimizing G.
                 for r, f in zip(dists_d, dists_g):
                     feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
+                '''
                 
                 if args.g_optim == 'boundary_seeking':
                     target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
