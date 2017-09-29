@@ -211,6 +211,18 @@ class Residual(NN.Module):
         return self.relu(self.linear(x) + x)
 
 
+class Highway(NN.Module):
+    def __init__(self, size):
+        NN.Module.__init__(self)
+        self.gater = NN.Linear(size, size)
+        self.gater.bias.data.fill_(-1)
+        self.transformer = NN.Linear(size, size)
+
+    def forward(self, x):
+        g = F.sigmoid(self.gater(x))
+        return g * F.leaky_relu(self.transformer(x)) + (1 - g) * x
+
+
 class Embedder(NN.Module):
     def __init__(self,
                  output_size=128,
@@ -246,27 +258,6 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].contiguous().view(batch_size, output_size)
 
-def calc_dists(hidden_states, hidden_state_lengths):
-    def kurt(x, dim):
-        return (((x - x.mean(dim, True)) ** 4).sum(dim) / x.size()[dim]) ** 0.25
-    means_d = []
-    stds_d = []
-    #kurts_d = []
-    for h, l in zip(hidden_states, hidden_state_lengths):
-        mask = length_mask((h.size()[0], h.size()[2]), l)
-        m = h.sum(2) / l.unsqueeze(1).float()
-        s = T.sqrt(((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 2).sum(2) / l.unsqueeze(1).float())
-        #k = T.pow(((h - m.unsqueeze(2) * mask.unsqueeze(1).float()) ** 4).sum(2) / l.unsqueeze(1).float(), 0.25)
-        means_d.append((m.mean(0),m.std(0)))
-        #means_d.append((s.mean(0),s.std(0)))
-        #means_d.append((k.mean(0), k.std(0)))
-        #stds_d.append((m.std(0),m.std(0)))
-        #stds_d.append((s.std(0),s.std(0)))
-        #stds_d.append((k.std(0),k.std(0)))
-        #kurts_d.append((kurt(m, 0), m.std(0)))
-        #kurts_d.append((kurt(s, 0), s.std(0)))
-        #kurts_d.append((kurt(k, 0), k.std(0)))
-    return means_d + stds_d# + kurts_d
 
 class Generator(NN.Module):
     def __init__(self,
@@ -370,7 +361,8 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct=_cnn_struct):
+                 cnn_struct=_cnn_struct,
+                 num_highways=4):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -390,6 +382,9 @@ class Discriminator(NN.Module):
             self.projector.append(NN.DataParallel(proj))
 
             infilters = outfilters
+
+        self.highway = NN.DataParallel(NN.Sequential(*[Highway(outfilters) for _ in range(num_highways)]))
+
         frame_size = outfilters
         self.frame_size = frame_size
         self._frame_size = frame_size
@@ -430,21 +425,26 @@ class Discriminator(NN.Module):
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
                 )
+
+        # Note: this is equivalent to a single layer CNN with a huge kernel size and stride.
         cnn_outputs = []
         cnn_output_lengths = []
         cnn_output = xold.unsqueeze(1)
         nframes = length
         cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
         for cnn_layer, proj, (_, stride, _) in zip(self.cnn, self.projector, self.cnn_struct):
-            cnn_output = F.leaky_relu(cnn_layer(cnn_output) + proj(c).unsqueeze(2))
+            cnn_output = cnn_layer(cnn_output) + proj(c).unsqueeze(2)
             nframes = (nframes + stride - 1) / stride
             cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
             cnn_outputs.append(cnn_output)
             cnn_output_lengths.append(nframes)
-        x = cnn_output
+        x = F.leaky_relu(cnn_output)
+
         x = x.permute(0, 2, 1)
         #x = x.view(32, nframes_max, frame_size)
         max_nframes = x.size()[1]
+        x = self.highway(x.contiguous().view(batch_size * max_nframes, -1)).view(batch_size, max_nframes, -1)
+
         c = c.unsqueeze(1).expand(batch_size, max_nframes, embed_size)
         x2 = T.cat([x, c], 2).permute(1,0,2)
         lstm_out, (_, _) = dynamic_rnn(self.rnn, x2, nframes, initial_state)
@@ -601,7 +601,7 @@ param_d = list(d.parameters()) + list(e_d.parameters())
 
 opt_g = T.optim.RMSprop(param_g, lr=args.glr)
 opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
-opt_d_pretrain = T.optim.RMSprop(param_d, lr=args.dlr, momentum=0.5)
+opt_d_pretrain = T.optim.RMSprop(param_d, lr=args.dlr)
 
 def discriminate(d, data, length, embed, target, target_w, real, real_w):
     cls, cls_w, _, _, nframes = d(data, length, embed)
@@ -828,15 +828,6 @@ if __name__ == '__main__':
             
             cls_g, cls_g_w, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
             
-            #dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
-            #dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
-            #feature_penalty = 0
-            #dists are (object, std) pairs.
-            #penalizing z-scores of gen from real distribution
-            #Note that the model could not do anything to r[1] by optimizing G.
-            #for r, f in zip(dists_d, dists_g):
-            #    feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
-
             if args.g_optim == 'boundary_seeking':
                 target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
             else:
