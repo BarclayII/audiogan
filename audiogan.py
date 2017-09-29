@@ -376,7 +376,7 @@ class Discriminator(NN.Module):
         self._embed_size = embed_size
         self._num_layers = num_layers
         self._cnn_struct = cnn_struct
-        
+
         self.cnn = NN.ModuleList()
         self.projector = NN.ModuleList()
         self.cnn_struct = cnn_struct
@@ -600,7 +600,8 @@ param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
 opt_g = T.optim.RMSprop(param_g, lr=args.glr)
-opt_d = T.optim.Adam(param_d, lr=args.dlr)
+opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
+opt_d_pretrain = T.optim.RMSprop(param_d, lr=args.dlr, momentum=0.5)
 
 def discriminate(d, data, length, embed, target, target_w, real, real_w):
     cls, cls_w, _, _, nframes = d(data, length, embed)
@@ -659,12 +660,12 @@ if __name__ == '__main__':
                 _, cls_d_wrong, _, _, _, _, _, loss_d_wrong, _, _, acc_d_wrong = discriminate(d, wrong_data, wrong_len, embed_d2, 0, 0, False, False)
 
                 loss = loss_d + loss_d_wrong
-                opt_d.zero_grad()
+                opt_d_pretrain.zero_grad()
                 loss.backward()
                 check_grad(param_d)
                 e_d_grad_norm = sum(T.norm(p.grad.data) ** 2 for p in e_d.parameters() if p.grad is not None) ** 0.5
                 d_grad_norm = clip_grad(param_d, args.dgradclip)
-                opt_d.step()
+                opt_d_pretrain.step()
 
             loss_d, loss, cls_d, cls_d_wrong = tonumpy(loss_d, loss, cls_d, cls_d_wrong)
 
