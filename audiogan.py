@@ -431,12 +431,18 @@ class Embedder(NN.Module):
         embed, (h, c) = dynamic_rnn(self.rnn, embed_seq, length, initial_state)
         h = h.permute(1, 0, 2)
         return h[:, -2:].view(batch_size, output_size)
+    
+    
+def calc_s_from_std(std):
+    return [std * 1e-1, std, std*1e1]
 
-def MMD_k(x, xp,s=[1e-4, 1e-2, 1]):
+def MMD_k(x, xp,s=[1e-1, 1e1], std=None):
+    if std:
+        s = calc_s_from_std(std)
     return sum([T.sum(T.exp(-1./(2.*si) * (x - xp)**2 )) for si in s])
 
-def MMD_single(feature_map_d, feature_map_g):
-    feature_penalty = MMD_k(feature_map_g.unsqueeze(0),feature_map_d.unsqueeze(1))/(len(feature_map_d)*len(feature_map_g))
+def MMD_distributions(feature_map_d, feature_map_g, std):
+    feature_penalty = MMD_k(feature_map_g.unsqueeze(0),feature_map_d.unsqueeze(1), std = std)/(len(feature_map_d)*len(feature_map_g))
     return feature_penalty
 
 
@@ -448,13 +454,35 @@ def fp_MMD(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_stat
     for s_idx in range(num_samples):
         for l_idx in range(num_layers):
             num_feature_maps = num_feature_maps_per_layer[l_idx]
-            feature_idxes = T.multinomial(T.ones(num_feature_maps), num_feature_maps/10)
+            feature_idxes = T.multinomial(T.ones(num_feature_maps), int(round(num_feature_maps**(1./4.))))
             for fm in feature_idxes:
                 feature_map_d = hidden_states_d[l_idx][s_idx,fm,:tonumpy(hidden_states_length_d[l_idx][s_idx])[0]]
                 feature_map_g = hidden_states_g[l_idx][s_idx,fm,:tonumpy(hidden_states_length_g[l_idx][s_idx])[0]]
-                feature_penalty += MMD_single(feature_map_d, feature_map_g)
+                std = None#feature_map_d.std()
+                feature_penalty -= MMD_distributions(feature_map_d, feature_map_g, std = std)
+                feature_penalty += MMD_distributions(feature_map_g, feature_map_g, std = std)
     return feature_penalty/10000
     
+def calc_stds(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_states_length_g):
+    num_samples = hidden_states_d[0].size()[0]
+    num_layers = len(hidden_states_d)
+    num_feature_maps_per_layer = [d.size()[1] for d in hidden_states_d]
+    std_d = [[]]*num_layers
+    std_g = [[]]*num_layers
+    for s_idx in range(num_samples):
+        for l_idx in range(num_layers):
+            num_feature_maps = num_feature_maps_per_layer[l_idx]
+            feature_idxes = T.multinomial(T.ones(num_feature_maps), int(round(num_feature_maps**(1./4.))))
+            for fm in feature_idxes:
+                try:
+                    feature_map_d = hidden_states_d[l_idx][s_idx,fm,:tonumpy(hidden_states_length_d[l_idx][s_idx])[0]]
+                    feature_map_g = hidden_states_g[l_idx][s_idx,fm,:tonumpy(hidden_states_length_g[l_idx][s_idx])[0]]
+                    std_d[l_idx].append(tonumpy(feature_map_d.std())[0])
+                    std_g[l_idx].append(tonumpy(feature_map_g.std())[0])
+                except:
+                    print('warning. nan returned at calc distances sample', s_idx,'layer', l_idx)
+                    pass
+    return std_g,std_d
     
     
 
@@ -632,7 +660,7 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct = [[11,5,32],[5,2,64],[11,5,256],[5,2,512]]):
+                 cnn_struct = [[11,5,32],[5,2,32],[11,5,64],[5,2,64],[5,2,128]]):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -687,7 +715,7 @@ class Discriminator(NN.Module):
         nframes = length
         cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
         for cnn_layer, (_, stride, _) in zip(self.cnn, self.cnn_struct):
-            cnn_output = F.leaky_relu(cnn_layer(cnn_output))
+            cnn_output = F.leaky_relu(cnn_layer(cnn_output)) * 2
             nframes = (nframes + stride - 1) / stride
             #cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
             cnn_outputs.append(cnn_output)
@@ -847,7 +875,7 @@ baseline = None
 gencatchup = args.gencatchup
 param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
-
+tfsess = TF.Session()
 opt_g = T.optim.RMSprop(param_g, lr=args.glr)
 opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
 if __name__ == '__main__':
@@ -1082,6 +1110,7 @@ if __name__ == '__main__':
                         p.grad.data += fp_grads[p]
                 check_grad(param_g)
                 g_grad_norm = clip_grad(param_g, args.ggradclip)
+                
                 d_train_writer.add_summary(
                         TF.Summary(
                             value=[
@@ -1097,7 +1126,23 @@ if __name__ == '__main__':
                         )
                 opt_g.step()
     
+    
+    
             if gen_iter % 20 == 0:
+                
+                cnn_stds_g, cnn_stds_d = calc_stds(hidden_states_d, hidden_states_g, hidden_states_length_d, hidden_states_length_g)
+                summ_stds = []
+                for std_idx in range(len(cnn_stds_g)):
+                    g_std = cnn_stds_g[std_idx]
+                    d_std = cnn_stds_d[std_idx]
+                    summ_stds.append(TF.summary.histogram("g_cnn_stds_layer" + str(std_idx), g_std, family = 'layer' + str(std_idx)))
+                    summ_stds.append(TF.summary.histogram("d_cnn_stds_layer" + str(std_idx), d_std, family = 'layer' + str(std_idx)))
+                TF_summary_stds = tfsess.run(summ_stds)
+                for s in TF_summary_stds:
+                    d_train_writer.add_summary(s, global_step=gen_iter)
+                
+                
+                
                 embed_g = e_g(cseq_fixed, clen_fixed)
                 fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
                 fake_data, fake_len = tonumpy(fake_data, fake_len)
