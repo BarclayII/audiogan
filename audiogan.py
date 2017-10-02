@@ -556,13 +556,17 @@ class Generator(NN.Module):
         x_list = []
         s_list = []
         stop_list = []
+        conv_enabled = 1
         for t in range(nframes):
             z_t = z[:, t]
             _x = T.cat([x_t, z_t], 1)
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = self.proj(lstm_h[-1]).tanh_()#self.relu(self.proj(lstm_h[-1]))
+            if conv_enabled:
+                x_t = self.relu(self.proj(lstm_h[-1]))
+            else:
+                x_t = self.proj(lstm_h[-1]).tanh_()
             logit_s_t = self.stopper(lstm_h[-1]) - 4
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
@@ -583,7 +587,7 @@ class Generator(NN.Module):
 
         x = T.cat(x_list, 1)
         s = T.stack(s_list, 1)
-        if 1:
+        if conv_enabled:
             x = x.unsqueeze(1)
             #print('start', x.size())
             x = x.view(batch_size, -1, 200)
@@ -591,11 +595,13 @@ class Generator(NN.Module):
             #x = x.permute(0,2,1)
             #print(x.size())
             for layer in self.deconv:
-                x = layer(x) * 2
+                x = layer(x) * 1.4
                 #print(x.size())
             #x = x.permute(0,2,1)
             x = x.squeeze(1)
         #print('end', x.size())
+        if conv_enabled:
+            x = self.tanh(x) * 2.2 - 1.1
         return x, s, stop_list, tovar(length * frame_size)
 
 
@@ -659,7 +665,7 @@ class Discriminator(NN.Module):
         nframes = length
         cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
         for cnn_layer, (_, stride, _) in zip(self.cnn, self.cnn_struct):
-            cnn_output = F.leaky_relu(cnn_layer(cnn_output)) * 3
+            cnn_output = F.leaky_relu(cnn_layer(cnn_output)) * 2
             nframes = (nframes + stride - 1) / stride
             #cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
             cnn_outputs.append(cnn_output)
@@ -981,6 +987,7 @@ if __name__ == '__main__':
                 cls_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
                 
                 _, hidden_states_d, hidden_states_length_d, nframes_d = d(real_data, real_len, embed_d)
+                
                 dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
                 dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
                 dists_d += calc_dists([real_data.unsqueeze(1)], hidden_states_length_d)
