@@ -583,7 +583,7 @@ class Generator(NN.Module):
 
         x = T.cat(x_list, 1)
         s = T.stack(s_list, 1)
-        if 0:
+        if 1:
             x = x.unsqueeze(1)
             #print('start', x.size())
             x = x.view(batch_size, -1, 200)
@@ -591,7 +591,7 @@ class Generator(NN.Module):
             #x = x.permute(0,2,1)
             #print(x.size())
             for layer in self.deconv:
-                x = layer(x)
+                x = layer(x) * 2
                 #print(x.size())
             #x = x.permute(0,2,1)
             x = x.squeeze(1)
@@ -659,7 +659,7 @@ class Discriminator(NN.Module):
         nframes = length
         cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
         for cnn_layer, (_, stride, _) in zip(self.cnn, self.cnn_struct):
-            cnn_output = F.leaky_relu(cnn_layer(cnn_output))
+            cnn_output = F.leaky_relu(cnn_layer(cnn_output)) * 3
             nframes = (nframes + stride - 1) / stride
             #cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
             cnn_outputs.append(cnn_output)
