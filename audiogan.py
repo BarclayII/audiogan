@@ -97,7 +97,8 @@ def tovar(*arrs):
 
 
 def tonumpy(*vars_):
-    arrs = [v.data.cpu().numpy() for v in vars_]
+    arrs = [(v.data.cpu().numpy() if isinstance(v, T.autograd.Variable) else
+             v.cpu().numpy() if T.is_tensor(v) else v) for v in vars_]
     return arrs[0] if len(arrs) == 1 else arrs
 
 
@@ -594,8 +595,8 @@ baseline = None
 param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
-opt_g = T.optim.RMSprop(param_g, lr=args.glr)
-opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
+opt_g = T.optim.Adam(param_g, lr=args.glr)
+opt_d = T.optim.Adam(param_d, lr=args.dlr)
 
 def discriminate(d, data, length, embed, target, target_w, real, real_w):
     cls, cls_w, _, _, nframes = d(data, length, embed)
@@ -623,102 +624,103 @@ if __name__ == '__main__':
             e_g = T.load('%s-eg-%05d' % (modelnameload, args.loaditerations))
             e_d = T.load('%s-ed-%05d' % (modelnameload, args.loaditerations))
 
-    if not args.pretrain_d and not modelnameload:
-        print 'Pretraining D'
-        for p in param_g:
-            p.requires_grad = False
-        for p in param_d:
-            p.requires_grad = True
-        for j in range(args.critic_iter):
-            with Timer.new('load', print_=False):
-                epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
-                _, _, _wrong_data, _wrong_len, _, _, _ = dataloader.next()
-                ck2, _cs2, _cl2, _, _ = dataset.pick_words(
-                        batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
-
-            dis_iter += 1
-
-            with Timer.new('train_d', print_=False):
-                real_data = tovar(_real_data)
-                real_len = tovar(_real_len).long()
-                wrong_data = tovar(_wrong_data)
-                wrong_len = tovar(_wrong_len).long()
-                cs = tovar(_cs).long()
-                cl = tovar(_cl).long()
-                embed_d = e_d(cs, cl)
-                cs2 = tovar(_cs2).long()
-                cl2 = tovar(_cl2).long()
-                embed_d2 = e_d(cs2, cl2)
-
-                _, cls_d, _, _, _, _, _, loss_d, _, _, acc_d = discriminate(d, real_data, real_len, embed_d, 1, 1, True, True)
-                _, cls_d_wrong, _, _, _, _, _, loss_d_wrong, _, _, acc_d_wrong = discriminate(d, wrong_data, wrong_len, embed_d2, 0, 0, False, False)
-
-                loss = loss_d + loss_d_wrong
-                opt_d.zero_grad()
-                loss.backward()
-                check_grad(param_d)
-                e_d_grad_norm = sum(T.norm(p.grad.data) ** 2 for p in e_d.parameters() if p.grad is not None) ** 0.5
-                d_grad_norm = clip_grad(param_d, args.dgradclip)
-                opt_d.step()
-
-            loss_d, loss, cls_d, cls_d_wrong = tonumpy(loss_d, loss, cls_d, cls_d_wrong)
-
-            d_train_writer.add_summary(
-                    TF.Summary(
-                        value=[
-                            TF.Summary.Value(tag='loss_d', simple_value=loss_d),
-                            TF.Summary.Value(tag='loss', simple_value=loss),
-                            TF.Summary.Value(tag='cls_d/mean', simple_value=cls_d.mean()),
-                            TF.Summary.Value(tag='cls_d/std', simple_value=cls_d.std()),
-                            TF.Summary.Value(tag='cls_d_wrong/mean', simple_value=cls_d_wrong.mean()),
-                            TF.Summary.Value(tag='cls_d_wrong/std', simple_value=cls_d_wrong.std()),
-                            TF.Summary.Value(tag='acc_d', simple_value=acc_d),
-                            TF.Summary.Value(tag='acc_d_wrong', simple_value=acc_d_wrong),
-                            TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
-                            ]
-                        ),
-                    dis_iter
-                    )
-
-            # Validation
-            epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
-            _, _, _wrong_data, _wrong_len, _, _, _ = dataloader.next()
-            ck2, _cs2, _cl2, _, _ = dataset.pick_words(
-                    batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
-            real_data = tovar(_real_data)
-            real_len = tovar(_real_len).long()
-            wrong_data = tovar(_wrong_data)
-            wrong_len = tovar(_wrong_len).long()
-            cs = tovar(_cs).long()
-            cl = tovar(_cl).long()
-            embed_d = e_d(cs, cl)
-            cs2 = tovar(_cs2).long()
-            cl2 = tovar(_cl2).long()
-            embed_d2 = e_d(cs2, cl2)
-
-            _, cls_d, _, _, _, _, _, loss_d_val, _, _, acc_d_val = discriminate(d, real_data, real_len, embed_d, 1, 1, True, True)
-            _, cls_d_wrong, _, _, _, _, _, loss_d_wrong_val, _, _, acc_d_wrong_val = discriminate(d, wrong_data, wrong_len, embed_d2, 0, 0, False, False)
-            loss_val = tonumpy(loss_d_val + loss_d_wrong_val)[0]
-
-            d_train_writer.add_summary(
-                    TF.Summary(
-                        value=[
-                            TF.Summary.Value(tag='loss_val', simple_value=loss_val),
-                            TF.Summary.Value(tag='acc_d_val', simple_value=acc_d_val),
-                            TF.Summary.Value(tag='acc_d_wrong_val', simple_value=acc_d_wrong_val),
-                            ]
-                        ),
-                    dis_iter
-                    )
-
-            print 'D', epoch, batch_id, loss, loss_val, 'Train Acc:', acc_d, acc_d_wrong, 'Val Acc:', acc_d_val, acc_d_wrong_val, 'Grad Norms:', e_d_grad_norm, d_grad_norm, 'Time:', Timer.get('load'), Timer.get('train_d')
-            if dis_iter % 10000 == 0:
-                T.save(d, '%s-dis-pretrain-%05d' % (modelnamesave, dis_iter))
-                T.save(e_d, '%s-ed-pretrain-%05d' % (modelnamesave, dis_iter))
-    else:
-        if not modelnameload:
-            d = T.load('%s-dis-pretrain-%05d' % (modelnamesave, args.pretrain_d))
-            e_d = T.load('%s-ed-pretrain-%05d' % (modelnamesave, args.pretrain_d))
+#    if not args.pretrain_d and not modelnameload:
+#        print 'Pretraining D'
+#        for p in param_g:
+#            p.requires_grad = False
+#        for p in param_d:
+#            p.requires_grad = True
+#        for j in range(args.critic_iter):
+#            with Timer.new('load', print_=False):
+#                epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
+#                _, _, _wrong_data, _wrong_len, _, _, _ = dataloader.next()
+#                ck2, _cs2, _cl2, _, _ = dataset.pick_words(
+#                        batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
+#
+#            dis_iter += 1
+#
+#            with Timer.new('train_d', print_=False):
+#                real_data = tovar(_real_data)
+#                real_len = tovar(_real_len).long()
+#                wrong_data = tovar(_wrong_data)
+#                wrong_len = tovar(_wrong_len).long()
+#                cs = tovar(_cs).long()
+#                cl = tovar(_cl).long()
+#                embed_d = e_d(cs, cl)
+#                cs2 = tovar(_cs2).long()
+#                cl2 = tovar(_cl2).long()
+#                embed_d2 = e_d(cs2, cl2)
+#
+#                _, cls_d, _, _, _, _, _, loss_d, _, _, acc_d = discriminate(d, real_data, real_len, embed_d, 1, 1, True, True)
+#                _, cls_d_wrong, _, _, _, _, _, loss_d_wrong, _, _, acc_d_wrong = discriminate(d, wrong_data, wrong_len, embed_d2, 0, 0, False, False)
+#
+#                loss = loss_d + loss_d_wrong
+#                opt_d.zero_grad()
+#                loss.backward()
+#                check_grad(param_d)
+#                e_d_grad_norm = sum(T.norm(p.grad.data) ** 2 for p in e_d.parameters() if p.grad is not None) ** 0.5
+#                d_grad_norm = clip_grad(param_d, args.dgradclip)
+#                opt_d.step()
+#
+#            loss_d, loss, cls_d, cls_d_wrong = tonumpy(loss_d, loss, cls_d, cls_d_wrong)
+#
+#            d_train_writer.add_summary(
+#                    TF.Summary(
+#                        value=[
+#                            TF.Summary.Value(tag='loss_d', simple_value=loss_d),
+#                            TF.Summary.Value(tag='loss', simple_value=loss),
+#                            TF.Summary.Value(tag='cls_d/mean', simple_value=cls_d.mean()),
+#                            TF.Summary.Value(tag='cls_d/std', simple_value=cls_d.std()),
+#                            TF.Summary.Value(tag='cls_d_wrong/mean', simple_value=cls_d_wrong.mean()),
+#                            TF.Summary.Value(tag='cls_d_wrong/std', simple_value=cls_d_wrong.std()),
+#                            TF.Summary.Value(tag='acc_d', simple_value=acc_d),
+#                            TF.Summary.Value(tag='acc_d_wrong', simple_value=acc_d_wrong),
+#                            TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
+#                            ]
+#                        ),
+#                    dis_iter
+#                    )
+#
+#            # Validation
+#            epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
+#            _, _, _wrong_data, _wrong_len, _, _, _ = dataloader.next()
+#            ck2, _cs2, _cl2, _, _ = dataset.pick_words(
+#                    batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
+#            real_data = tovar(_real_data)
+#            real_len = tovar(_real_len).long()
+#            wrong_data = tovar(_wrong_data)
+#            wrong_len = tovar(_wrong_len).long()
+#            cs = tovar(_cs).long()
+#            cl = tovar(_cl).long()
+#            embed_d = e_d(cs, cl)
+#            cs2 = tovar(_cs2).long()
+#            cl2 = tovar(_cl2).long()
+#            embed_d2 = e_d(cs2, cl2)
+#
+#            _, cls_d, _, _, _, _, _, loss_d_val, _, _, acc_d_val = discriminate(d, real_data, real_len, embed_d, 1, 1, True, True)
+#            _, cls_d_wrong, _, _, _, _, _, loss_d_wrong_val, _, _, acc_d_wrong_val = discriminate(d, wrong_data, wrong_len, embed_d2, 0, 0, False, False)
+#            loss_val = tonumpy(loss_d_val + loss_d_wrong_val)[0]
+#
+#            d_train_writer.add_summary(
+#                    TF.Summary(
+#                        value=[
+#                            TF.Summary.Value(tag='loss_val', simple_value=loss_val),
+#                            TF.Summary.Value(tag='acc_d_val', simple_value=acc_d_val),
+#                            TF.Summary.Value(tag='acc_d_wrong_val', simple_value=acc_d_wrong_val),
+#                            ]
+#                        ),
+#                    dis_iter
+#                    )
+#
+#            print 'D', epoch, batch_id, loss, loss_val, 'Train Acc:', acc_d, acc_d_wrong, 'Val Acc:', acc_d_val, acc_d_wrong_val, 'Grad Norms:', e_d_grad_norm, d_grad_norm, 'Time:', Timer.get('load'), Timer.get('train_d')
+#            if dis_iter % 10000 == 0:
+#                T.save(d, '%s-dis-pretrain-%05d' % (modelnamesave, dis_iter))
+#                T.save(e_d, '%s-ed-pretrain-%05d' % (modelnamesave, dis_iter))
+#    else:
+#        if not modelnameload:
+#            d_pretrain = T.load('%s-dis-pretrain-%05d' % (modelnamesave, args.pretrain_d))
+#            e_d = T.load('%s-ed-pretrain-%05d' % (modelnamesave, args.pretrain_d))
+#            d.state_dict().update({k: v for k, v in d_pretrain.state_dict().items() if not k.startswith('cnn')})
 
     while True:
         _epoch = epoch
@@ -756,12 +758,12 @@ if __name__ == '__main__':
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data = tovar((fake_data + noise).data)
                 fake_data.requires_grad = True
-                cls_g, cls_g_w, _, _, _, _, loss_g, _, _, acc_g, acc_g_w = \
+                cls_g, cls_g_w, _, _, _, _, _, _, loss_g, acc_g, acc_g_w = \
                         discriminate(d, fake_data, fake_len, embed_d2, 0, 1, False, True)
-                cls_g_x, cls_g_w_x, _, _, _, _, loss_g_x, _, _, acc_g_x, acc_g_w_x = \
+                cls_g_x, cls_g_w_x, _, _, _, _, _, _, loss_g_x, acc_g_x, acc_g_w_x = \
                         discriminate(d, fake_data, fake_len, embed_d, 0, 0, False, False)
 
-                loss = loss_d + loss_d_x + 2 * (loss_g + loss_g_x)
+                loss = loss_d + loss_d_x + loss_g + loss_g_x
                 opt_d.zero_grad()
                 loss.backward()
                 check_grad(param_d)
@@ -796,10 +798,10 @@ if __name__ == '__main__':
                     dis_iter
                     )
 
-            accs = [acc_d, acc_d_x, acc_g, acc_g_x, acc_d_w, acc_d_w_x]
+            accs = [acc_d, acc_d_x, acc_g, acc_g_x, acc_d_w, acc_d_w_x, acc_g_w, acc_g_w_x]
             print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
 
-            if all(_ > args.require_acc for _ in accs):
+            if acc_d > 0.5 and acc_g > 0.5 and acc_d_x > 0.5 and acc_g_x > 0.5:
                 break
 
         gen_iter += 1
