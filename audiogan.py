@@ -5,6 +5,7 @@ from functools import wraps
 import torch as T
 import torch.nn as NN
 import torch.nn.functional as F
+import torch.nn.init as INIT
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.nn.utils import weight_norm as torch_weight_norm
 
@@ -188,19 +189,18 @@ def clip_grad(params, clip_norm):
 def init_lstm(lstm):
     for name, param in lstm.named_parameters():
         if name.startswith('weight_ih'):
-            s = NP.sqrt(6. / (param.size()[0] + param.size()[1]))
-            p = T.Tensor(RNG.uniform(low=-s, high=s, size=param.size())).cuda()
-            param.data.copy_(p)
+            INIT.xavier_uniform(param.data)
         elif name.startswith('weight_hh'):
-            shape = (param.size()[0], param.size()[1])
-            a = RNG.normal(0, 1, shape)
-            u, _, v = NP.linalg.svd(a, full_matrices=False)
-            q = u if u.shape == shape else v
-            q = q.reshape(shape)
-            p = T.Tensor(q).cuda()
-            param.data.copy_(p)
+            INIT.orthogonal(param.data)
         elif name.startswith('bias'):
-            param.data.fill_(0)
+            INIT.constant(param.data, 0)
+
+def init_weights(module):
+    for name, param in module.named_parameters():
+        if name.find('weight') != -1:
+            INIT.xavier_uniform(param.data)
+        elif name.find('bias') != -1:
+            INIT.constant(param.data, 0)
 
 
 class Residual(NN.Module):
@@ -296,6 +296,8 @@ class Generator(NN.Module):
             self.rnn.append(NN.DataParallel(lstm))
         self.proj = NN.DataParallel(NN.Linear(state_size, frame_size))
         self.stopper = NN.DataParallel(NN.Linear(state_size, 1))
+        init_weights(self.proj)
+        init_weights(self.stopper)
 
     def forward(self, batch_size=None, length=None, z=None, c=None):
         frame_size = self._frame_size
@@ -386,11 +388,12 @@ class Discriminator(NN.Module):
             self.cnn.append(NN.DataParallel(conv))
 
             infilters = outfilters
+        init_weights(self.cnn)
         frame_size = outfilters
         self.frame_size = frame_size
         self._frame_size = frame_size
         self.rnn = NN.LSTM(
-                frame_size + embed_size,
+                frame_size,
                 state_size // 2,
                 num_layers,
                 bidirectional=True,
@@ -402,16 +405,19 @@ class Discriminator(NN.Module):
                 Residual(state_size),
                 Residual(state_size)
             ))
-        self.classifier_word = NN.DataParallel(NN.Sequential(
-                NN.Linear(state_size, state_size // 2),
-                NN.LeakyReLU(),
-                NN.Linear(state_size // 2, 1),
-                ))
         self.classifier = NN.DataParallel(NN.Sequential(
                 NN.Linear(state_size, state_size // 2),
                 NN.LeakyReLU(),
                 NN.Linear(state_size // 2, 1),
                 ))
+        self.encoder = NN.DataParallel(NN.Sequential(
+                NN.Linear(state_size, state_size),
+                NN.LeakyReLU(),
+                NN.Linear(state_size, embed_size),
+                ))
+        init_weights(self.residual_net)
+        init_weights(self.classifier)
+        init_weights(self.encoder)
 
     def forward(self, x, length, c, percent_used = 0.1):
         frame_size = self._frame_size
@@ -441,18 +447,24 @@ class Discriminator(NN.Module):
         x = x.permute(0, 2, 1)
         #x = x.view(32, nframes_max, frame_size)
         max_nframes = x.size()[1]
-        c = c.unsqueeze(1).expand(batch_size, max_nframes, embed_size)
-        x2 = T.cat([x, c], 2).permute(1,0,2)
-        lstm_out, (_, _) = dynamic_rnn(self.rnn, x2, nframes, initial_state)
+        x2 = x.permute(1,0,2)
+        lstm_out, (h, _) = dynamic_rnn(self.rnn, x2, nframes, initial_state)
         lstm_out = lstm_out.permute(1, 0, 2)
         max_nframes = lstm_out.size()[1]
 
         conv_out = lstm_out.view(batch_size * max_nframes, state_size)
         res_out = self.residual_net(conv_out)
         classifier_out = self.classifier(res_out).view(batch_size, max_nframes)
-        classifier_word = self.classifier_word(res_out).view(batch_size, max_nframes)
-        
-        return classifier_out, classifier_word, cnn_outputs, cnn_output_lengths, nframes
+
+        h = h.permute(1, 0, 2)
+        h = h[:, -2:].contiguous().view(batch_size, state_size)
+        code = self.encoder(h)
+
+        code_unitnorm = code / (code.norm(2, 1, keepdim=True) + 1e-4)
+        c_unitnorm = c / (c.norm(2, 1, keepdim=True) + 1e-4)
+        ranking = T.bmm(code_unitnorm.unsqueeze(1), c_unitnorm.unsqueeze(2)).squeeze()
+
+        return classifier_out, ranking, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=100, type=int)
@@ -595,26 +607,20 @@ baseline = None
 param_g = list(g.parameters()) + list(e_g.parameters())
 param_d = list(d.parameters()) + list(e_d.parameters())
 
-opt_g = T.optim.Adam(param_g, lr=args.glr)
-opt_d = T.optim.Adam(param_d, lr=args.dlr)
+opt_g = T.optim.RMSprop(param_g, lr=args.glr)
+opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
 
-def discriminate(d, data, length, embed, target, target_w, real, real_w):
-    cls, cls_w, _, _, nframes = d(data, length, embed)
+def discriminate(d, data, length, embed, target, real):
+    cls, rank, _, _, nframes = d(data, length, embed)
     target = tovar(T.ones(*(cls.size())) * target)
-    target_w = tovar(T.ones(*(cls_w.size())) * target_w)
     weight = length_mask(cls.size(), nframes)
     loss_c = binary_cross_entropy_with_logits_per_sample(cls, target, weight=weight) / nframes.float()
     loss_c = loss_c.mean()
-    loss_w = binary_cross_entropy_with_logits_per_sample(cls_w, target_w, weight=weight) / nframes.float()
-    loss_w = loss_w.mean()
     correct = ((cls.data > 0) if real else (cls.data < 0)).float() * weight.data
     correct = correct.sum()
-    correct_w = ((cls_w.data > 0) if real_w else (cls_w.data < 0)).float() * weight.data
-    correct_w = correct_w.sum()
     num = weight.data.sum()
     acc = correct / num
-    acc_w = correct_w / num
-    return cls, cls_w, nframes, target, target_w, weight, loss_c, loss_w, loss_c + loss_w, acc, acc_w
+    return cls, nframes, target, weight, loss_c, rank, acc
 
 if __name__ == '__main__':
     if modelnameload:
@@ -733,13 +739,15 @@ if __name__ == '__main__':
             dis_iter += 1
             with Timer.new('load', print_=False):
                 epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
-                _, _cs2, _cl2, _, _ = dataset.pick_words(
-                        batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
+                epoch, batch_id, _real_data2, _real_len2, _, _cs2, _cl2 = dataloader.next()
 
             with Timer.new('train_d', print_=False):
                 noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
                 real_data = tovar(_real_data) + noise
                 real_len = tovar(_real_len).long()
+                noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
+                real_data2 = tovar(_real_data2) + noise
+                real_len2 = tovar(_real_len2).long()
                 cs = tovar(_cs).long()
                 cl = tovar(_cl).long()
                 cs2 = tovar(_cs2).long()
@@ -749,59 +757,58 @@ if __name__ == '__main__':
                 embed_g2 = e_g(cs2, cl2)
                 embed_d2 = e_d(cs2, cl2)
 
-                cls_d, cls_d_w, _, _, _, _, _, _, loss_d, acc_d, acc_d_w = \
-                        discriminate(d, real_data, real_len, embed_d, 0.9, 1, True, True)
-                cls_d_x, cls_d_w_x, _, _, _, _, _, _, loss_d_x, acc_d_x, acc_d_w_x = \
-                        discriminate(d, real_data, real_len, embed_d2, 0.9, 0, True, False)
+                cls_d, _, _, _, loss_d, rank_d, acc_d = \
+                        discriminate(d, real_data, real_len, embed_d, 0.9, True)
+                cls_d_x, _, _, _, _, rank_d_x, acc_d_x = \
+                        discriminate(d, real_data, real_len, embed_d2, 0.9, True)
+                cls_d_x2, _, _, _, _, rank_d_x2, acc_d_x2 = \
+                        discriminate(d, real_data2, real_len2, embed_d, 0.9, True)
 
                 fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g2)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data = tovar((fake_data + noise).data)
-                fake_data.requires_grad = True
-                cls_g, cls_g_w, _, _, _, _, _, _, loss_g, acc_g, acc_g_w = \
-                        discriminate(d, fake_data, fake_len, embed_d2, 0, 1, False, True)
-                cls_g_x, cls_g_w_x, _, _, _, _, _, _, loss_g_x, acc_g_x, acc_g_w_x = \
-                        discriminate(d, fake_data, fake_len, embed_d, 0, 0, False, False)
+                cls_g, _, _, _, loss_g, rank_g, acc_g = \
+                        discriminate(d, fake_data, fake_len, embed_d2, 0, False)
 
-                loss = loss_d + loss_d_x + loss_g + loss_g_x
+                loss_rank = ((1 - rank_d + rank_d_x).clamp(min=0) + (1 - rank_d + rank_d_x2).clamp(min=0)).mean()
+                loss = loss_d + loss_g + loss_rank
                 opt_d.zero_grad()
                 loss.backward()
                 check_grad(param_d)
                 d_grad_norm = clip_grad(param_d, args.dgradclip)
                 opt_d.step()
 
-            loss_d, loss_d_x, loss_g, loss_g_x, loss, cls_d, cls_d_x, cls_g, cls_g_x = \
-                    tonumpy(loss_d, loss_d_x, loss_g, loss_g_x, loss, cls_d, cls_d_x, cls_g, cls_g_x)
+            loss_d, loss_g, loss_rank, loss, cls_d, cls_g, rank_d, rank_d_x, rank_d_x2 = \
+                    tonumpy(loss_d, loss_g, loss_rank, loss, cls_d, cls_g, rank_d, rank_d_x, rank_d_x2)
             d_train_writer.add_summary(
                     TF.Summary(
                         value=[
                             TF.Summary.Value(tag='loss_d', simple_value=loss_d),
-                            TF.Summary.Value(tag='loss_d_x', simple_value=loss_d_x),
                             TF.Summary.Value(tag='loss_g', simple_value=loss_g),
-                            TF.Summary.Value(tag='loss_g_x', simple_value=loss_g_x),
+                            TF.Summary.Value(tag='loss_rank', simple_value=loss_rank),
                             TF.Summary.Value(tag='loss', simple_value=loss),
                             TF.Summary.Value(tag='cls_d/mean', simple_value=cls_d.mean()),
                             TF.Summary.Value(tag='cls_d/std', simple_value=cls_d.std()),
-                            TF.Summary.Value(tag='cls_d_x/mean', simple_value=cls_d_x.mean()),
-                            TF.Summary.Value(tag='cls_d_x/std', simple_value=cls_d_x.std()),
                             TF.Summary.Value(tag='cls_g/mean', simple_value=cls_g.mean()),
                             TF.Summary.Value(tag='cls_g/std', simple_value=cls_g.std()),
-                            TF.Summary.Value(tag='cls_g_x/mean', simple_value=cls_g_x.mean()),
-                            TF.Summary.Value(tag='cls_g_x/std', simple_value=cls_g_x.std()),
+                            TF.Summary.Value(tag='rank_d/mean', simple_value=rank_d.mean()),
+                            TF.Summary.Value(tag='rank_d/std', simple_value=rank_d.std()),
+                            TF.Summary.Value(tag='rank_d_x/mean', simple_value=rank_d_x.mean()),
+                            TF.Summary.Value(tag='rank_d_x/std', simple_value=rank_d_x.std()),
+                            TF.Summary.Value(tag='rank_d_x2/mean', simple_value=rank_d_x2.mean()),
+                            TF.Summary.Value(tag='rank_d_x2/std', simple_value=rank_d_x2.std()),
                             TF.Summary.Value(tag='acc_d', simple_value=acc_d),
-                            TF.Summary.Value(tag='acc_d_x', simple_value=acc_d_x),
                             TF.Summary.Value(tag='acc_g', simple_value=acc_g),
-                            TF.Summary.Value(tag='acc_g_x', simple_value=acc_g_x),
                             TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
                             ]
                         ),
                     dis_iter
                     )
 
-            accs = [acc_d, acc_d_x, acc_g, acc_g_x, acc_d_w, acc_d_w_x, acc_g_w, acc_g_w_x]
+            accs = [acc_d, acc_g]
             print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
 
-            if acc_d > 0.5 and acc_g > 0.5 and acc_d_x > 0.5 and acc_g_x > 0.5:
+            if acc_d > 0.5 and acc_g > 0.5:
                 break
 
         gen_iter += 1
@@ -821,7 +828,7 @@ if __name__ == '__main__':
             noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
             fake_data += noise
             
-            cls_g, cls_g_w, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
+            cls_g, rank_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
             
             #dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
             #dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
@@ -836,13 +843,11 @@ if __name__ == '__main__':
                 target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
             else:
                 target = tovar(T.zeros(*(cls_g.size())))            
-            target_w = tovar(T.ones(*(cls_g_w.size())) * 1)
             weight = length_mask(cls_g.size(), nframes_g)
             nframes_max = (fake_len / args.framesize).data.max()
             weight_r = length_mask((batch_size, nframes_max), fake_len / args.framesize)
             loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-            loss_w = binary_cross_entropy_with_logits_per_sample(cls_g_w, target_w, weight=weight) / nframes_g.float()
-            loss = loss + loss_w
+            loss = loss - rank_g
 
             reward = -loss.data
             baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
