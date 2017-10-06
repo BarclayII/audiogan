@@ -175,15 +175,15 @@ def check_grad(params):
 
 
 def clip_grad(params, clip_norm):
-    if clip_norm == 0:
-        return
-    norm = 0
-    for p in params:
-        if p.grad is not None:
-            _norm = T.norm(p.grad.data)
-            norm += _norm
-            if _norm > clip_norm:
-                p.grad.data /= (_norm / clip_norm)
+    norm = NP.sqrt(
+            sum(p.grad.data.norm() ** 2
+                for p in params if p.grad is not None
+                )
+            )
+    if norm > clip_norm:
+        for p in params:
+            if p.grad is not None:
+                p.grad /= norm / clip_norm
     return norm
 
 def init_lstm(lstm):
@@ -493,6 +493,7 @@ parser.add_argument('--noisescale', type=float, default=0.1)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
+parser.add_argument('--lambda_rank', type=float, default=10)
 parser.add_argument('--pretrain_d', type=int, default=0)
 
 args = parser.parse_args()
@@ -846,8 +847,8 @@ if __name__ == '__main__':
             weight = length_mask(cls_g.size(), nframes_g)
             nframes_max = (fake_len / args.framesize).data.max()
             weight_r = length_mask((batch_size, nframes_max), fake_len / args.framesize)
-            loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-            loss = loss - rank_g
+            _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
+            loss = _loss - rank_g
 
             reward = -loss.data
             baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
@@ -873,25 +874,26 @@ if __name__ == '__main__':
                 lambda_fp *= 1.1
             '''
 
-            loss = loss.mean()
-            #loss = _loss + feature_penalty * lambda_fp
-            #loss = _loss
+            _loss = _loss.mean()
+            _rank_g = -rank_g.mean()
             for i, fake_stop in enumerate(fake_stop_list):
                 fake_stop.reinforce(args.lambda_pg * reward[:, i:i+1])
             # Debug the gradient norms
             opt_g.zero_grad()
-            loss.backward(retain_graph=True)
+            _loss.backward(retain_graph=True)
             loss_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
             loss_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
-            #opt_g.zero_grad()
-            #feature_penalty.backward(T.Tensor([lambda_fp]).cuda(), retain_graph=True)
-            #fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
-            #fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+            opt_g.zero_grad()
+            _rank_g.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
+            rank_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+            rank_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+            '''
             for p in param_g:
                 p.requires_grad = False
             for p in g.stopper.parameters():
                 p.requires_grad = True
-            #opt_g.zero_grad()
+            '''
+            opt_g.zero_grad()
             T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
             pg_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
             # Do the real thing
@@ -899,8 +901,8 @@ if __name__ == '__main__':
                 if p.grad is not None:
                     if p in loss_grad_dict:
                         p.grad.data += loss_grad_dict[p]
-                    #if p in fp_grad_dict:
-                    #    p.grad.data += fp_grad_dict[p]
+                    if p in rank_grad_dict:
+                        p.grad.data += rank_grad_dict[p]
 
             check_grad(param_g)
             g_grad_norm = clip_grad(param_g, args.ggradclip)
@@ -908,10 +910,8 @@ if __name__ == '__main__':
                     TF.Summary(
                         value=[
                             TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
-                            #TF.Summary.Value(tag='feature_penalty', simple_value=tonumpy(feature_penalty)[0]),
-                            #TF.Summary.Value(tag='lambda_fp', simple_value=lambda_fp),
                             TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_grad_norm),
-                            #TF.Summary.Value(tag='g_fp_grad_norm', simple_value=fp_grad_norm),
+                            TF.Summary.Value(tag='g_rank_grad_norm', simple_value=rank_grad_norm),
                             TF.Summary.Value(tag='g_pg_grad_norm', simple_value=pg_grad_norm),
                             ]
                         ),
@@ -936,4 +936,4 @@ if __name__ == '__main__':
                 T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                 T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-        print 'G', gen_iter, tonumpy(loss), Timer.get('train_g')
+        print 'G', gen_iter, loss_grad_norm, rank_grad_norm, pg_grad_norm, tonumpy(_loss), Timer.get('train_g')
