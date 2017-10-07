@@ -424,12 +424,12 @@ class Discriminator(NN.Module):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=5, type=int)
-parser.add_argument('--rnng_layers', type=int, default=1)
+parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
-parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=512, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=64, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=0.1)
@@ -444,7 +444,7 @@ parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect-sm.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
-parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
+parser.add_argument('--maxlen', type=int, default=100, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.1)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
@@ -729,7 +729,7 @@ if __name__ == '__main__':
                         discriminate(d, fake_data, fake_len, embed_d2, 0, False)
 
                 loss_rank = ((1 - rank_d + rank_d_x).clamp(min=0) + (1 - rank_d + rank_d_x2).clamp(min=0)).mean()
-                loss = loss_d + loss_g + loss_rank
+                loss = loss_d + loss_g + loss_rank/10
                 opt_d.zero_grad()
                 loss.backward()
                 check_grad(param_d)
@@ -805,7 +805,7 @@ if __name__ == '__main__':
             nframes_max = fake_len.data.max()
             weight_r = length_mask((batch_size, nframes_max), fake_len)
             _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-            loss = _loss - rank_g
+            loss = _loss - rank_g/10
 
             reward = -loss.data
             baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
