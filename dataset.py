@@ -45,24 +45,25 @@ def word_to_seq(word, maxcharlen):
     char_seq[:len(word)] = [ord(c) for c in word]
     return char_seq
 
-def _pick_sample_from_word(key, maxlen, dataset, frame_size=None, skip_samples=False):
+def _pick_sample_from_word(key, maxlen, dataset, frame_size=None, skip_samples=False, nfreq=None):
     sample_idx = RNG.choice(dataset[key].shape[0])
-    sample_out = NP.zeros(maxlen)
+    sample_out = NP.zeros((nfreq,maxlen))
     length = 0
     if not skip_samples:
         sample_in = dataset[key][sample_idx]
-        sample_len = sum(1 - NP.cumprod((sample_in == 0)[::-1]))
+        
+        sample_len = sum(1 - NP.cumprod((sample_in.sum(0) == 0)[::-1]))
         if sample_len > maxlen:
             return None, None
-        length = sample_len if frame_size is None else util.roundup(sample_len, frame_size)
+        length = sample_len
 
-        sample_out[:sample_len] = sample_in[:sample_len]
+        sample_out[:,:sample_len] = sample_in[:,:sample_len]
     return sample_out, length
 
 def pick_word(maxlen, dataset, keys, maxcharlen, args, frame_size=None, skip_samples=False):
     while True:
         key = RNG.choice(keys)
-        sample_out, length = _pick_sample_from_word(key, maxlen, dataset, frame_size, skip_samples)
+        sample_out, length = _pick_sample_from_word(key, maxlen, dataset, frame_size, skip_samples, args.nfreq)
         if sample_out is not None:
             if not skip_samples:
                 maxabs = NP.abs(sample_out).max()
@@ -82,7 +83,7 @@ def _conditional_dataloader(batch_size, dataset, maxlen, keys, args, frame_size=
     maxcharlen = max(len(k) for k in keys)
 
     if frame_size is not None:
-        maxlen = util.roundup(maxlen, frame_size)
+        pass#maxlen = util.roundup(maxlen, frame_size)
     while True:
         samples = []
         batch += 1
@@ -100,7 +101,7 @@ def conditional_dataloader(batch_size, args, maxlen=None, frame_size=None):
     keys = _valid_keys(dataset.keys(), args)
     keys = list(RNG.permutation(keys))
     n_train_keys = len(keys) // 10 * 9
-    maxlen = maxlen or max(dataset[k].shape[1] for k in keys)
+    maxlen = maxlen or max(dataset[k].shape[2] for k in keys)
 
     dataloader = _conditional_dataloader(
             batch_size, dataset, maxlen, keys[:n_train_keys], args, frame_size)
