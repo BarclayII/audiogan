@@ -307,7 +307,7 @@ class Generator(NN.Module):
         num_layers = self._num_layers
 
         if z is None:
-            nframes = div_roundup(length, frame_size)
+            nframes = length#div_roundup(length, frame_size)
             z = tovar(T.randn(batch_size, nframes, noise_size))
         else:
             batch_size, nframes, _ = z.size()
@@ -349,49 +349,25 @@ class Generator(NN.Module):
             if generating.sum() == 0:
                 break
 
-        x = T.cat(x_list, 1)
+        x = T.stack(x_list, 2)
         s = T.stack(s_list, 1)
 
-        return x, s, stop_list, tovar(length * frame_size)
+        return x, s, stop_list, tovar(length)
 
-_cnn_struct = [
-        [7, 2, 128],
-        [7, 2, 128],
-        [7, 2, 128],
-        [7, 2, 256],
-        [7, 2, 256],
-        [7, 2, 256],
-        [7, 2, 512],
-        [7, 2, 512],
-        [7, 2, 512],
-        ]
 
 class Discriminator(NN.Module):
     def __init__(self,
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 cnn_struct=_cnn_struct):
+                 nfreq = 1025):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
         self._num_layers = num_layers
-        self._cnn_struct = cnn_struct
+        self._frame_size = nfreq
         
-        self.cnn = NN.ModuleList()
-        self.cnn_struct = cnn_struct
-        infilters = 1
-        for idx, layer in enumerate(cnn_struct):
-            kernel, stride, outfilters = layer[0],layer[1],layer[2]
-
-            conv = NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2)
-            self.cnn.append(NN.DataParallel(conv))
-
-            infilters = outfilters
-        init_weights(self.cnn)
-        frame_size = outfilters
-        self.frame_size = frame_size
-        self._frame_size = frame_size
+        frame_size = args.nfreq
         self.rnn = NN.LSTM(
                 frame_size,
                 state_size // 2,
@@ -399,12 +375,6 @@ class Discriminator(NN.Module):
                 bidirectional=True,
                 )
         init_lstm(self.rnn)
-        self.residual_net = NN.DataParallel(NN.Sequential(
-                Residual(state_size),
-                Residual(state_size),
-                Residual(state_size),
-                Residual(state_size)
-            ))
         self.classifier = NN.DataParallel(NN.Sequential(
                 NN.Linear(state_size, state_size // 2),
                 NN.LeakyReLU(),
@@ -415,7 +385,6 @@ class Discriminator(NN.Module):
                 NN.LeakyReLU(),
                 NN.Linear(state_size, embed_size),
                 ))
-        init_weights(self.residual_net)
         init_weights(self.classifier)
         init_weights(self.encoder)
 
@@ -424,7 +393,7 @@ class Discriminator(NN.Module):
         state_size = self._state_size
         num_layers = self._num_layers
         embed_size = self._embed_size
-        batch_size, maxlen = x.size()
+        batch_size, nfreq, maxlen = x.size()
 
         xold = x
 
@@ -432,18 +401,7 @@ class Discriminator(NN.Module):
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
                 )
-        cnn_outputs = []
-        cnn_output_lengths = []
-        cnn_output = xold.unsqueeze(1)
         nframes = length
-        cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
-        for cnn_layer, (_, stride, _) in zip(self.cnn, self.cnn_struct):
-            cnn_output = F.leaky_relu(cnn_layer(cnn_output))
-            nframes = (nframes + stride - 1) / stride
-            cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
-            cnn_outputs.append(cnn_output)
-            cnn_output_lengths.append(nframes)
-        x = cnn_output
         x = x.permute(0, 2, 1)
         #x = x.view(32, nframes_max, frame_size)
         max_nframes = x.size()[1]
@@ -452,9 +410,7 @@ class Discriminator(NN.Module):
         lstm_out = lstm_out.permute(1, 0, 2)
         max_nframes = lstm_out.size()[1]
 
-        conv_out = lstm_out.view(batch_size * max_nframes, state_size)
-        res_out = self.residual_net(conv_out)
-        classifier_out = self.classifier(res_out).view(batch_size, max_nframes)
+        classifier_out = self.classifier(lstm_out).view(batch_size, max_nframes)
 
         h = h.permute(1, 0, 2)
         h = h[:, -2:].contiguous().view(batch_size, state_size)
@@ -464,12 +420,12 @@ class Discriminator(NN.Module):
         c_unitnorm = c / (c.norm(2, 1, keepdim=True) + 1e-4)
         ranking = T.bmm(code_unitnorm.unsqueeze(1), c_unitnorm.unsqueeze(2)).squeeze()
 
-        return classifier_out, ranking, cnn_outputs, cnn_output_lengths, nframes
+        return classifier_out, ranking, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=100, type=int)
+parser.add_argument('--critic_iter', default=5, type=int)
 parser.add_argument('--rnng_layers', type=int, default=1)
-parser.add_argument('--rnnd_layers', type=int, default=1)
+parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
@@ -485,16 +441,17 @@ parser.add_argument('--modelnameload', type=str, default='')
 parser.add_argument('--just_run', type=str, default='')
 parser.add_argument('--loaditerations', type=int, default=0)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
-parser.add_argument('--dataset', type=str, default='dataset.h5')
+parser.add_argument('--dataset', type=str, default='data-spect-sm.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
-parser.add_argument('--maxlen', type=int, default=40000, help='maximum sample length (0 for unlimited)')
+parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.1)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
 parser.add_argument('--lambda_rank', type=float, default=10)
 parser.add_argument('--pretrain_d', type=int, default=0)
+parser.add_argument('--nfreq', type=int, default=1025)
 
 args = parser.parse_args()
 args.conditional = True
@@ -508,7 +465,7 @@ if len(args.modelname) > 0:
 else:
     modelnamesave = args.modelnamesave
     modelnameload = args.modelnameload
-
+args.framesize = args.nfreq
 print modelnamesave
 print args
 
@@ -552,7 +509,7 @@ d = Discriminator(
         state_size=args.dstatesize,
         embed_size=args.embedsize,
         num_layers=args.rnnd_layers,
-        ).cuda()
+        nfreq = args.nfreq).cuda()
 
 def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
     PL.plot(sample)
@@ -612,7 +569,7 @@ opt_g = T.optim.RMSprop(param_g, lr=args.glr)
 opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
 
 def discriminate(d, data, length, embed, target, real):
-    cls, rank, _, _, nframes = d(data, length, embed)
+    cls, rank, nframes = d(data, length, embed)
     target = tovar(T.ones(*(cls.size())) * target)
     weight = length_mask(cls.size(), nframes)
     loss_c = binary_cross_entropy_with_logits_per_sample(cls, target, weight=weight) / nframes.float()
@@ -829,7 +786,7 @@ if __name__ == '__main__':
             noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
             fake_data += noise
             
-            cls_g, rank_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
+            cls_g, rank_g, nframes_g = d(fake_data, fake_len, embed_d)
             
             #dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
             #dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
@@ -845,8 +802,8 @@ if __name__ == '__main__':
             else:
                 target = tovar(T.zeros(*(cls_g.size())))            
             weight = length_mask(cls_g.size(), nframes_g)
-            nframes_max = (fake_len / args.framesize).data.max()
-            weight_r = length_mask((batch_size, nframes_max), fake_len / args.framesize)
+            nframes_max = fake_len.data.max()
+            weight_r = length_mask((batch_size, nframes_max), fake_len)
             _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
             loss = _loss - rank_g
 
