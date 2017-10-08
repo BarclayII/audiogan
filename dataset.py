@@ -60,6 +60,12 @@ def _pick_sample_from_word(key, maxlen, dataset, frame_size=None, skip_samples=F
         sample_out[:,:sample_len] = sample_in[:,:sample_len]
     return sample_out, length
 
+def transform(x):
+    return x - 0.5
+
+def invtransform(x):
+    return x + 0.5
+
 def pick_word(maxlen, dataset, keys, maxcharlen, args, frame_size=None, skip_samples=False):
     while True:
         key = RNG.choice(keys)
@@ -69,7 +75,7 @@ def pick_word(maxlen, dataset, keys, maxcharlen, args, frame_size=None, skip_sam
                 maxabs = NP.abs(sample_out).max()
                 if maxabs == 0:
                     continue
-                sample_out /= maxabs
+                sample_out = transform(sample_out / maxabs)
             break
 
     return key, word_to_seq(key, maxcharlen), len(key), sample_out, length

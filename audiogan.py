@@ -330,8 +330,7 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = self.sigmoid(self.proj(lstm_h[-1])*10 - 1)**2
-            x_t = x_t * 1.2 - .1
+            x_t = self.proj(lstm_h[-1]).tanh_() * 1.2 - .1
             logit_s_t = self.stopper(lstm_h[-1]) - .5
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
@@ -442,7 +441,7 @@ parser.add_argument('--modelnameload', type=str, default='')
 parser.add_argument('--just_run', type=str, default='')
 parser.add_argument('--loaditerations', type=int, default=0)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
-parser.add_argument('--dataset', type=str, default='data-spect-sm.h5')
+parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=0, help='maximum sample length (0 for unlimited)')
@@ -530,6 +529,7 @@ def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
     writer.add_summary(TF.Summary(value=[summary]), gen_iter)
 
 def add_heatmap_summary(writer, word, sample, gen_iter, tag='plot'):
+    sample = dataset.invtransform(sample)
     n_repeat = 4
     sample = NP.clip(sample,0,None)
     PL.imshow(NP.repeat(sample, n_repeat, 1))
@@ -548,6 +548,8 @@ def add_heatmap_summary(writer, word, sample, gen_iter, tag='plot'):
     writer.add_summary(TF.Summary(value=[summary]), gen_iter)
 
 def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
+    # TODO transform to raw audio
+    return
     librosa.output.write_wav(wav_file, sample, sr=8000)
     with open(wav_file, 'rb') as f:
         wavbuf = f.read()
