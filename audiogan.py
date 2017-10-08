@@ -330,9 +330,9 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = (self.proj(lstm_h[-1]) - 1).tanh_()
+            x_t = (self.proj(lstm_h[-1]) - 1.5).tanh_()
             x_t = x_t  / 1.9
-            logit_s_t = self.stopper(lstm_h[-1]) - 1.5
+            logit_s_t = self.stopper(lstm_h[-1]) - 2
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -425,8 +425,8 @@ class Discriminator(NN.Module):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=10, type=int)
-parser.add_argument('--rnng_layers', type=int, default=1)
-parser.add_argument('--rnnd_layers', type=int, default=1)
+parser.add_argument('--rnng_layers', type=int, default=2)
+parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
