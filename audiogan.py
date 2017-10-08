@@ -112,11 +112,7 @@ def roundup(x, d):
 def log_sigmoid(x):
     return -F.softplus(-x)
 def log_one_minus_sigmoid(x):
-    y_neg = T.log(1 - F.sigmoid(x))
-    y_pos = -x - T.log(1 + T.exp(-x))
-    x_sign = (x > 0).float()
-    return x_sign * y_pos + (1 - x_sign) * y_neg
-
+    return -x - F.softplus(-x)
 
 def binary_cross_entropy_with_logits_per_sample(input, target, weight=None):
     if not target.is_same_size(input):
@@ -170,8 +166,9 @@ def check_grad(params):
         g = p.grad.data
         anynan = (g != g).long().sum()
         anybig = (g.abs() > 1e+5).long().sum()
-        assert anynan == 0
-        assert anybig == 0
+        if anynan or anybig:
+            return False
+    return True
 
 
 def clip_grad(params, clip_norm):
@@ -324,6 +321,7 @@ class Generator(NN.Module):
         x_list = []
         s_list = []
         stop_list = []
+        p_list = []
         for t in range(nframes):
             z_t = z[:, t]
             _x = T.cat([x_t, z_t], 1)
@@ -344,7 +342,7 @@ class Generator(NN.Module):
             x_list.append(x_t)
             s_list.append(logit_s_t.squeeze())
             stop_list.append(stop_t)
-
+            p_list.append(p_t)
             stop_t = stop_t.squeeze()
             generating *= (stop_t.data == 0).long().cpu()
             if generating.sum() == 0:
@@ -352,8 +350,9 @@ class Generator(NN.Module):
 
         x = T.stack(x_list, 2)
         s = T.stack(s_list, 1)
-
-        return x, s, stop_list, tovar(length)
+        p = T.stack(p_list, 1)
+  
+        return x, s, stop_list, tovar(length), p
 
 
 class Discriminator(NN.Module):
@@ -708,7 +707,8 @@ if __name__ == '__main__':
 #            d_pretrain = T.load('%s-dis-pretrain-%05d' % (modelnamesave, args.pretrain_d))
 #            e_d = T.load('%s-ed-pretrain-%05d' % (modelnamesave, args.pretrain_d))
 #            d.state_dict().update({k: v for k, v in d_pretrain.state_dict().items() if not k.startswith('cnn')})
-
+    grad_nan = 0
+    g_grad_nan = 0
     while True:
         _epoch = epoch
 
@@ -745,7 +745,7 @@ if __name__ == '__main__':
                 cls_d_x2, _, _, _, _, rank_d_x2, acc_d_x2 = \
                         discriminate(d, real_data2, real_len2, embed_d, 0.9, True)
 
-                fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g2)
+                fake_data, _, _, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g2)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data = tovar((fake_data + noise).data)
                 cls_g, _, _, _, loss_g, rank_g, acc_g = \
@@ -755,7 +755,12 @@ if __name__ == '__main__':
                 loss = loss_d + loss_g + loss_rank/10
                 opt_d.zero_grad()
                 loss.backward()
-                check_grad(param_d)
+                if not check_grad(param_d):
+                    grad_nan += 1
+                    print 'Gradient exploded %d times', grad_nan
+                    assert grad_nan <= 0
+                    continue
+                grad_nan = 0
                 d_grad_norm = clip_grad(param_d, args.dgradclip)
                 opt_d.step()
 
@@ -807,7 +812,7 @@ if __name__ == '__main__':
                 cl = tovar(cl).long()
                 embed_g = e_g(cs, cl)
                 embed_d = e_d(cs, cl)
-                fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
+                fake_data, fake_s, fake_stop_list, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data += noise
                 
@@ -883,12 +888,16 @@ if __name__ == '__main__':
                     if p.grad is not None:
                         if p in loss_grad_dict:
                             p.grad.data += loss_grad_dict[p]
-                            check_grad(param_g)
                         if p in rank_grad_dict:
                             p.grad.data += rank_grad_dict[p]
-                            check_grad(param_g)
     
-                check_grad(param_g)
+                
+                if not check_grad(param_d):
+                    grad_nan += 1
+                    print 'Gradient exploded %d times', grad_nan
+                    assert grad_nan <= 0
+                    continue
+                grad_nan = 0
                 g_grad_norm = clip_grad(param_g, args.ggradclip)
                 d_train_writer.add_summary(
                         TF.Summary(
@@ -905,7 +914,7 @@ if __name__ == '__main__':
     
             if gen_iter % 20 == 0:
                 embed_g = e_g(cseq_fixed, clen_fixed)
-                fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
+                fake_data, _, _, fake_len, fake_p = g(z=z_fixed, c=embed_g)
                 fake_data, fake_len = tonumpy(fake_data, fake_len)
     
                 for batch in range(batch_size):
