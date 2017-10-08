@@ -330,8 +330,8 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = self.proj(lstm_h[-1]).tanh_()
-            logit_s_t = self.stopper(lstm_h[-1])
+            x_t = NN.Softplus()(self.proj(lstm_h[-1]))
+            logit_s_t = self.stopper(lstm_h[-1]) - 3
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -423,16 +423,16 @@ class Discriminator(NN.Module):
         return classifier_out, ranking, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=5, type=int)
+parser.add_argument('--critic_iter', default=1, type=int)
 parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--gstatesize', type=int, default=512, help='RNN state size')
-parser.add_argument('--dstatesize', type=int, default=64, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=2048, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=128, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
-parser.add_argument('--ggradclip', type=float, default=0.1)
+parser.add_argument('--ggradclip', type=float, default=1)
 parser.add_argument('--dlr', type=float, default=1e-4)
 parser.add_argument('--glr', type=float, default=1e-4)
 parser.add_argument('--modelname', type=str, default = '')
@@ -444,7 +444,7 @@ parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect-sm.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
-parser.add_argument('--maxlen', type=int, default=100, help='maximum sample length (0 for unlimited)')
+parser.add_argument('--maxlen', type=int, default=0, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.1)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
@@ -452,6 +452,7 @@ parser.add_argument('--lambda_pg', type=float, default=0.1)
 parser.add_argument('--lambda_rank', type=float, default=10)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
+parser.add_argument('--gencatchup', type=int, default=1)
 
 args = parser.parse_args()
 args.conditional = True
@@ -499,7 +500,7 @@ g = Generator(
         embed_size=args.embedsize,
         num_layers=args.rnng_layers,
         ).cuda()
-nframes = div_roundup(maxlen, args.framesize)
+nframes = maxlen#div_roundup(maxlen, args.framesize)
 z_fixed = tovar(RNG.randn(batch_size, nframes, args.noisesize))
 
 e_g = Embedder(args.embedsize).cuda()
@@ -513,6 +514,23 @@ d = Discriminator(
 
 def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
     PL.plot(sample)
+    PL.savefig(png_file)
+    PL.close()
+    with open(png_file, 'rb') as f:
+        imgbuf = f.read()
+    img = Image.open(png_file)
+    summary = TF.Summary.Image(
+            height=img.height,
+            width=img.width,
+            colorspace=3,
+            encoded_image_string=imgbuf
+            )
+    summary = TF.Summary.Value(tag='%s/%s' % (tag, word), image=summary)
+    writer.add_summary(TF.Summary(value=[summary]), gen_iter)
+
+def add_heatmap_summary(writer, word, sample, gen_iter, tag='plot'):
+    n_repeat = 4
+    PL.imshow(NP.repeat(sample, n_repeat, 1))
     PL.savefig(png_file)
     PL.close()
     with open(png_file, 'rb') as f:
@@ -546,8 +564,8 @@ d_train_writer = TF.summary.FileWriter(log_train_d)
 # Add real waveforms
 _, _, samples, lengths, cseq, cseq_fixed, clen_fixed = dataloader_val.next()
 for i in range(batch_size):
-    add_waveform_summary(d_train_writer, cseq[i], samples[i, :lengths[i]], 0, 'real_plot')
-    add_audio_summary(d_train_writer, cseq[i], samples[i, :lengths[i]], lengths[i], 0, 'real_audio')
+    add_heatmap_summary(d_train_writer, cseq[i], samples[i, :,:lengths[i]], 0, 'real_plot')
+    add_audio_summary(d_train_writer, cseq[i], samples[i, :,:lengths[i]], lengths[i], 0, 'real_audio')
 
 cseq_fixed = NP.array(cseq_fixed)
 clen_fixed = NP.array(clen_fixed)
@@ -701,10 +719,10 @@ if __name__ == '__main__':
 
             with Timer.new('train_d', print_=False):
                 noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data = tovar(_real_data) + noise
+                real_data = tovar(_real_data)# + noise
                 real_len = tovar(_real_len).long()
                 noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data2 = tovar(_real_data2) + noise
+                real_data2 = tovar(_real_data2)# + noise
                 real_len2 = tovar(_real_len2).long()
                 cs = tovar(_cs).long()
                 cl = tovar(_cl).long()
@@ -724,7 +742,7 @@ if __name__ == '__main__':
 
                 fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g2)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-                fake_data = tovar((fake_data + noise).data)
+                #fake_data = tovar((fake_data + noise).data)
                 cls_g, _, _, _, loss_g, rank_g, acc_g = \
                         discriminate(d, fake_data, fake_len, embed_d2, 0, False)
 
@@ -769,128 +787,131 @@ if __name__ == '__main__':
             if acc_d > 0.5 and acc_g > 0.5:
                 break
 
-        gen_iter += 1
         for p in param_g:
             p.requires_grad = True
         for p in param_d:
             p.requires_grad = False
-
-        _, cs, cl, _, _ = dataset.pick_words(
-                batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
-        with Timer.new('train_g', print_=False):
-            cs = tovar(cs).long()
-            cl = tovar(cl).long()
-            embed_g = e_g(cs, cl)
-            embed_d = e_d(cs, cl)
-            fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
-            noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-            fake_data += noise
+        
+        for _ in range(args.gencatchup):
+            gen_iter += 1
             
-            cls_g, rank_g, nframes_g = d(fake_data, fake_len, embed_d)
-            
-            #dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
-            #dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
-            #feature_penalty = 0
-            #dists are (object, std) pairs.
-            #penalizing z-scores of gen from real distribution
-            #Note that the model could not do anything to r[1] by optimizing G.
-            #for r, f in zip(dists_d, dists_g):
-            #    feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
-
-            if args.g_optim == 'boundary_seeking':
-                target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
-            else:
-                target = tovar(T.zeros(*(cls_g.size())))            
-            weight = length_mask(cls_g.size(), nframes_g)
-            nframes_max = fake_len.data.max()
-            weight_r = length_mask((batch_size, nframes_max), fake_len)
-            _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-            loss = _loss - rank_g/10
-
-            reward = -loss.data
-            baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
-            d_train_writer.add_summary(
-                    TF.Summary(
-                        value=[
-                            TF.Summary.Value(tag='reward_baseline', simple_value=baseline),
-                            TF.Summary.Value(tag='reward/mean', simple_value=reward.cpu().numpy().mean()),
-                            TF.Summary.Value(tag='reward/std', simple_value=reward.cpu().numpy().std()),
-                            ]
-                        ),
-                    gen_iter
-                    )
-            reward = (reward - baseline).unsqueeze(1) * weight_r.data
-
-            '''
-            fp_raw = tonumpy(feature_penalty)
-            if fp_raw  * lambda_fp > 100:
-                lambda_fp *= .2
-            if fp_raw  * lambda_fp > 10:
-                lambda_fp *= .9
-            if fp_raw  * lambda_fp < 1:
-                lambda_fp *= 1.1
-            '''
-
-            _loss = _loss.mean()
-            _rank_g = -rank_g.mean()
-            for i, fake_stop in enumerate(fake_stop_list):
-                fake_stop.reinforce(args.lambda_pg * reward[:, i:i+1])
-            # Debug the gradient norms
-            opt_g.zero_grad()
-            _loss.backward(retain_graph=True)
-            loss_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
-            loss_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
-            opt_g.zero_grad()
-            _rank_g.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
-            rank_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
-            rank_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
-            '''
-            for p in param_g:
-                p.requires_grad = False
-            for p in g.stopper.parameters():
-                p.requires_grad = True
-            '''
-            opt_g.zero_grad()
-            T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
-            pg_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
-            # Do the real thing
-            for p in param_g:
-                if p.grad is not None:
-                    if p in loss_grad_dict:
-                        p.grad.data += loss_grad_dict[p]
-                    if p in rank_grad_dict:
-                        p.grad.data += rank_grad_dict[p]
-
-            check_grad(param_g)
-            g_grad_norm = clip_grad(param_g, args.ggradclip)
-            d_train_writer.add_summary(
-                    TF.Summary(
-                        value=[
-                            TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
-                            TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_grad_norm),
-                            TF.Summary.Value(tag='g_rank_grad_norm', simple_value=rank_grad_norm),
-                            TF.Summary.Value(tag='g_pg_grad_norm', simple_value=pg_grad_norm),
-                            ]
-                        ),
-                    gen_iter
-                    )
-            opt_g.step()
-
-        if gen_iter % 20 == 0:
-            embed_g = e_g(cseq_fixed, clen_fixed)
-            fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
-            fake_data, fake_len = tonumpy(fake_data, fake_len)
-
-            for batch in range(batch_size):
-                fake_sample = fake_data[batch, :fake_len[batch]]
-                add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter)
-
-            if gen_iter % 500 == 0:
+            _, cs, cl, _, _ = dataset.pick_words(
+                    batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
+            with Timer.new('train_g', print_=False):
+                cs = tovar(cs).long()
+                cl = tovar(cl).long()
+                embed_g = e_g(cs, cl)
+                embed_d = e_d(cs, cl)
+                fake_data, fake_s, fake_stop_list, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g)
+                noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
+                fake_data += noise
+                
+                cls_g, rank_g, nframes_g = d(fake_data, fake_len, embed_d)
+                
+                #dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
+                #dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
+                #feature_penalty = 0
+                #dists are (object, std) pairs.
+                #penalizing z-scores of gen from real distribution
+                #Note that the model could not do anything to r[1] by optimizing G.
+                #for r, f in zip(dists_d, dists_g):
+                #    feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
+    
+                if args.g_optim == 'boundary_seeking':
+                    target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
+                else:
+                    target = tovar(T.zeros(*(cls_g.size())))            
+                weight = length_mask(cls_g.size(), nframes_g)
+                nframes_max = fake_len.data.max()
+                weight_r = length_mask((batch_size, nframes_max), fake_len)
+                _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
+                loss = _loss - rank_g/10
+    
+                reward = -loss.data
+                baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
+                d_train_writer.add_summary(
+                        TF.Summary(
+                            value=[
+                                TF.Summary.Value(tag='reward_baseline', simple_value=baseline),
+                                TF.Summary.Value(tag='reward/mean', simple_value=reward.cpu().numpy().mean()),
+                                TF.Summary.Value(tag='reward/std', simple_value=reward.cpu().numpy().std()),
+                                ]
+                            ),
+                        gen_iter
+                        )
+                reward = (reward - baseline).unsqueeze(1) * weight_r.data
+    
+                '''
+                fp_raw = tonumpy(feature_penalty)
+                if fp_raw  * lambda_fp > 100:
+                    lambda_fp *= .2
+                if fp_raw  * lambda_fp > 10:
+                    lambda_fp *= .9
+                if fp_raw  * lambda_fp < 1:
+                    lambda_fp *= 1.1
+                '''
+    
+                _loss = _loss.mean()
+                _rank_g = -rank_g.mean()
+                for i, fake_stop in enumerate(fake_stop_list):
+                    fake_stop.reinforce(args.lambda_pg * reward[:, i:i+1])
+                # Debug the gradient norms
+                opt_g.zero_grad()
+                _loss.backward(retain_graph=True)
+                loss_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+                loss_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+                opt_g.zero_grad()
+                _rank_g.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
+                rank_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+                rank_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+                '''
+                for p in param_g:
+                    p.requires_grad = False
+                for p in g.stopper.parameters():
+                    p.requires_grad = True
+                '''
+                opt_g.zero_grad()
+                T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
+                pg_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+                # Do the real thing
+                for p in param_g:
+                    if p.grad is not None:
+                        if p in loss_grad_dict:
+                            p.grad.data += loss_grad_dict[p]
+                            check_grad(param_g)
+                        if p in rank_grad_dict:
+                            p.grad.data += rank_grad_dict[p]
+                            check_grad(param_g)
+    
+                check_grad(param_g)
+                g_grad_norm = clip_grad(param_g, args.ggradclip)
+                d_train_writer.add_summary(
+                        TF.Summary(
+                            value=[
+                                TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
+                                TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_grad_norm),
+                                TF.Summary.Value(tag='g_rank_grad_norm', simple_value=rank_grad_norm),
+                                TF.Summary.Value(tag='g_pg_grad_norm', simple_value=pg_grad_norm),
+                                ]
+                            ),
+                        gen_iter
+                        )
+                opt_g.step()
+    
+            if gen_iter % 20 == 0:
+                embed_g = e_g(cseq_fixed, clen_fixed)
+                fake_data, _, _, fake_len = g(z=z_fixed, c=embed_g)
+                fake_data, fake_len = tonumpy(fake_data, fake_len)
+    
                 for batch in range(batch_size):
-                    fake_sample = fake_data[batch, :fake_len[batch]]
-                    add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter)
-                T.save(d, '%s-dis-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-                T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-                T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-                T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-        print 'G', gen_iter, loss_grad_norm, rank_grad_norm, pg_grad_norm, tonumpy(_loss), Timer.get('train_g')
+                    fake_sample = fake_data[batch, :,:fake_len[batch]]
+                    add_heatmap_summary(d_train_writer, cseq[batch], fake_sample, gen_iter)
+                if gen_iter % 500 == 0:
+                    for batch in range(batch_size):
+                        fake_sample = fake_data[batch, :fake_len[batch]]
+                        #add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter)
+                    T.save(d, '%s-dis-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+            print 'G', gen_iter, loss_grad_norm, rank_grad_norm, pg_grad_norm, tonumpy(_loss), Timer.get('train_g')
