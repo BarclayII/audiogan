@@ -330,8 +330,9 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = self.proj(lstm_h[-1]).tanh_() * 1.2 - .1
-            logit_s_t = self.stopper(lstm_h[-1]) - .5
+            x_t = (self.proj(lstm_h[-1]) - 1).tanh_()
+            x_t = x_t  / 1.9
+            logit_s_t = self.stopper(lstm_h[-1]) - 1.5
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -429,7 +430,7 @@ parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
-parser.add_argument('--dstatesize', type=int, default=128, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=256, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
@@ -723,10 +724,10 @@ if __name__ == '__main__':
 
             with Timer.new('train_d', print_=False):
                 noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data = tovar(_real_data)# + noise
+                real_data = tovar(_real_data) + noise
                 real_len = tovar(_real_len).long()
                 noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data2 = tovar(_real_data2)# + noise
+                real_data2 = tovar(_real_data2) + noise
                 real_len2 = tovar(_real_len2).long()
                 cs = tovar(_cs).long()
                 cl = tovar(_cl).long()
@@ -746,7 +747,7 @@ if __name__ == '__main__':
 
                 fake_data, _, _, fake_len = g(batch_size=batch_size, length=maxlen, c=embed_g2)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-                #fake_data = tovar((fake_data + noise).data)
+                fake_data = tovar((fake_data + noise).data)
                 cls_g, _, _, _, loss_g, rank_g, acc_g = \
                         discriminate(d, fake_data, fake_len, embed_d2, 0, False)
 
