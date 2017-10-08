@@ -331,7 +331,7 @@ class Generator(NN.Module):
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = NN.Softplus()(self.proj(lstm_h[-1]))
-            logit_s_t = self.stopper(lstm_h[-1]) - 3
+            logit_s_t = self.stopper(lstm_h[-1]) - .5
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -424,12 +424,12 @@ class Discriminator(NN.Module):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=1, type=int)
-parser.add_argument('--rnng_layers', type=int, default=2)
-parser.add_argument('--rnnd_layers', type=int, default=2)
+parser.add_argument('--rnng_layers', type=int, default=1)
+parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--gstatesize', type=int, default=2048, help='RNN state size')
-parser.add_argument('--dstatesize', type=int, default=128, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=16, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
