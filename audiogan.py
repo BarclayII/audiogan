@@ -298,7 +298,7 @@ class Generator(NN.Module):
         self.stopper = NN.DataParallel(NN.Linear(state_size, 1))
         init_weights(self.proj)
         init_weights(self.stopper)
-
+        self.sigmoid = NN.Sigmoid()
     def forward(self, batch_size=None, length=None, z=None, c=None):
         frame_size = self._frame_size
         noise_size = self._noise_size
@@ -330,7 +330,8 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = NN.Softplus()(self.proj(lstm_h[-1]))
+            x_t = self.sigmoid(self.proj(lstm_h[-1])*10 - 1)**2
+            x_t = x_t * 1.2 - .1
             logit_s_t = self.stopper(lstm_h[-1]) - .5
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
@@ -423,13 +424,13 @@ class Discriminator(NN.Module):
         return classifier_out, ranking, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=1, type=int)
+parser.add_argument('--critic_iter', default=10, type=int)
 parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=1)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
-parser.add_argument('--dstatesize', type=int, default=16, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=128, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
@@ -530,6 +531,7 @@ def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
 
 def add_heatmap_summary(writer, word, sample, gen_iter, tag='plot'):
     n_repeat = 4
+    sample = NP.clip(sample,0,None)
     PL.imshow(NP.repeat(sample, n_repeat, 1))
     PL.savefig(png_file)
     PL.close()
@@ -852,7 +854,7 @@ if __name__ == '__main__':
                 '''
     
                 _loss = _loss.mean()
-                _rank_g = -rank_g.mean()
+                _rank_g = -(rank_g/10).mean()
                 for i, fake_stop in enumerate(fake_stop_list):
                     fake_stop.reinforce(args.lambda_pg * reward[:, i:i+1])
                 # Debug the gradient norms
