@@ -458,7 +458,7 @@ parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
-parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
+parser.add_argument('--maxlen', type=int, default=300, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.01)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
@@ -526,6 +526,18 @@ d = Discriminator(
         num_layers=args.rnnd_layers,
         nfreq = args.nfreq).cuda()
 
+def spect_to_audio(spect):
+    spect = spect + .5
+    spect = spect * 4
+    audio_sample = librosa.istft(spect)
+    for i in range(100):
+        w_ = audio_sample
+        y = librosa.stft(audio_sample)
+        z = spect * NP.exp(1j * NP.angle(y))
+        audio_sample = librosa.istft(z)
+    return audio_sample
+
+
 def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
     PL.plot(sample)
     PL.savefig(png_file)
@@ -562,8 +574,6 @@ def add_heatmap_summary(writer, word, sample, gen_iter, tag='plot'):
     writer.add_summary(TF.Summary(value=[summary]), gen_iter)
 
 def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
-    # TODO transform to raw audio
-    return
     librosa.output.write_wav(wav_file, sample, sr=8000)
     with open(wav_file, 'rb') as f:
         wavbuf = f.read()
@@ -582,9 +592,12 @@ d_train_writer = TF.summary.FileWriter(log_train_d)
 # Add real waveforms
 _, _, samples, lengths, cseq, cseq_fixed, clen_fixed = dataloader_val.next()
 for i in range(batch_size):
-    add_heatmap_summary(d_train_writer, cseq[i], samples[i, :,:lengths[i]], 0, 'real_plot')
-    add_audio_summary(d_train_writer, cseq[i], samples[i, :,:lengths[i]], lengths[i], 0, 'real_audio')
-
+    real_len = lengths[i]
+    real_spect = samples[i, :,:real_len]
+    add_heatmap_summary(d_train_writer, cseq[i], real_spect, 0, 'real_spect')
+    real_sample = spect_to_audio(real_spect)
+    add_waveform_summary(d_train_writer, cseq[i], real_sample, 0, 'real_waveform')
+    add_audio_summary(d_train_writer, cseq[i], real_sample, real_len, 0, 'real_audio')
 cseq_fixed = NP.array(cseq_fixed)
 clen_fixed = NP.array(clen_fixed)
 cseq_fixed, clen_fixed = tovar(cseq_fixed, clen_fixed)
@@ -857,18 +870,22 @@ if __name__ == '__main__':
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
                 
                 
-                loss_fp = ((fake_len.float().mean() - real_len.float().mean()) **2)/10 + \
-                            ((fake_len.float().std() - real_len.float().std()) **2)/10 + \
-                            ((fake_data.float().mean() - real_data.float().mean()) **2) + \
+                loss_fp_data = ((fake_data.float().mean() - real_data.float().mean()) **2) + \
                             ((fake_data.float().std() - real_data.float().std()) **2)
-                loss_fp = loss_fp / 10
+                            
+                loss_fp_len = ((fake_len.float().mean() - real_len.float().mean()) **2)/10 + \
+                            ((fake_len.float().std() - real_len.float().std()) **2)/10
+                           
+                            
+                loss_fp = loss_fp_data / 10
+                loss_fp_len = loss_fp_len / 10
                 
                 loss = _loss - rank_g/10
                 
                 #print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
                 #print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
     
-                reward = -loss.data
+                reward = -loss.data - loss_fp_len.data
                 baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
                 d_train_writer.add_summary(
                         TF.Summary(
@@ -906,7 +923,7 @@ if __name__ == '__main__':
                 rank_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 rank_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 opt_g.zero_grad()
-                loss_fp.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
+                loss_fp_data.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
                 fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 '''
@@ -942,7 +959,7 @@ if __name__ == '__main__':
                                 TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
                                 TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_grad_norm),
                                 TF.Summary.Value(tag='g_rank_grad_norm', simple_value=rank_grad_norm),
-                                TF.Summary.Value(tag='g_fp_grad_norm', simple_value=fp_grad_norm),
+                                TF.Summary.Value(tag='g_fp_data_grad_norm', simple_value=fp_grad_norm),
                                 TF.Summary.Value(tag='g_pg_grad_norm', simple_value=pg_grad_norm),
                                 ]
                             ),
@@ -957,11 +974,13 @@ if __name__ == '__main__':
     
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :,:fake_len[batch]]
-                    add_heatmap_summary(d_train_writer, cseq[batch], fake_sample, gen_iter)
-                if gen_iter % 500 == 0:
+                    add_heatmap_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_spectogram')
+                if gen_iter % 200 == 0:
                     for batch in range(batch_size):
-                        fake_sample = fake_data[batch, :fake_len[batch]]
-                        #add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter)
+                        fake_spect = fake_data[batch, :,:fake_len[batch]]
+                        fake_sample = spect_to_audio(fake_spect)
+                        add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_waveform')
+                        add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter, 'fake_audio')
                     T.save(d, '%s-dis-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                     T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                     T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
