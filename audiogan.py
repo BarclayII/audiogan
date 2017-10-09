@@ -458,7 +458,7 @@ parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
-parser.add_argument('--maxlen', type=int, default=300, help='maximum sample length (0 for unlimited)')
+parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.01)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
@@ -611,12 +611,6 @@ l = 10
 alpha = 0.1
 baseline = None
 
-param_g = list(g.parameters()) + list(e_g.parameters())
-param_d = list(d.parameters()) + list(e_d.parameters())
-
-opt_g = T.optim.RMSprop(param_g, lr=args.glr)
-opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
-
 def discriminate(d, data, length, embed, target, real):
     cls, rank, nframes = d(data, length, embed)
     target = tovar(T.ones(*(cls.size())) * target)
@@ -636,6 +630,16 @@ if __name__ == '__main__':
             g = T.load('%s-gen-%05d' % (modelnameload, args.loaditerations))
             e_g = T.load('%s-eg-%05d' % (modelnameload, args.loaditerations))
             e_d = T.load('%s-ed-%05d' % (modelnameload, args.loaditerations))
+
+    param_g = list(g.parameters()) + list(e_g.parameters())
+    param_d = list(d.parameters()) + list(e_d.parameters())
+    for p in param_g:
+        p.requires_grad = True
+    for p in param_d:
+        p.requires_grad = True
+    opt_g = T.optim.RMSprop(param_g, lr=args.glr)
+    opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
+
 
 #    if not args.pretrain_d and not modelnameload:
 #        print 'Pretraining D'
@@ -975,7 +979,7 @@ if __name__ == '__main__':
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :,:fake_len[batch]]
                     add_heatmap_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_spectogram')
-                if gen_iter % 200 == 0:
+                if gen_iter % 40 == 0:
                     for batch in range(batch_size):
                         fake_spect = fake_data[batch, :,:fake_len[batch]]
                         fake_sample = spect_to_audio(fake_spect)
