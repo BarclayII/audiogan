@@ -291,8 +291,21 @@ class Generator(NN.Module):
             lstm = NN.LSTMCell(state_size, state_size)
             init_lstm(lstm)
             self.rnn.append(NN.DataParallel(lstm))
+        '''
         self.proj = NN.DataParallel(NN.Linear(state_size, frame_size))
         self.stopper = NN.DataParallel(NN.Linear(state_size, 1))
+        '''
+        self.proj = NN.DataParallel(NN.Sequential(
+                NN.Linear(state_size, state_size),
+                NN.LeakyReLU(),
+                NN.Linear(state_size, frame_size),
+                ))
+        self.stopper = NN.DataParallel(NN.Sequential(
+                NN.Linear(state_size, state_size/2),
+                NN.LeakyReLU(),
+                NN.Linear(state_size/2, 1),
+                ))
+        
         init_weights(self.proj)
         init_weights(self.stopper)
         self.sigmoid = NN.Sigmoid()
@@ -328,7 +341,7 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = (self.proj(lstm_h[-1]) - 1.5).tanh_()
+            x_t = (self.proj(lstm_h[-1]) - 2).tanh_()
             x_t = x_t  / 1.9
             logit_s_t = self.stopper(lstm_h[-1]) - 2
             s_t = log_sigmoid(logit_s_t)
@@ -344,7 +357,8 @@ class Generator(NN.Module):
             stop_list.append(stop_t)
             p_list.append(p_t)
             stop_t = stop_t.squeeze()
-            generating *= (stop_t.data == 0).long().cpu()
+            if t > 1:
+                generating *= (stop_t.data == 0).long().cpu()
             if generating.sum() == 0:
                 break
 
@@ -445,7 +459,7 @@ parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=0, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=0.1)
+parser.add_argument('--noisescale', type=float, default=0.01)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
@@ -792,7 +806,13 @@ if __name__ == '__main__':
                     )
 
             accs = [acc_d, acc_g]
-            print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
+            if batch_id % 10 == 0:
+                print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
+                print 'lengths'
+                print 'fake', list(fake_len.data)
+                print 'real', list(real_len.data)
+                print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
+                print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
 
             if acc_d > 0.5 and acc_g > 0.5:
                 break
@@ -835,7 +855,18 @@ if __name__ == '__main__':
                 nframes_max = fake_len.data.max()
                 weight_r = length_mask((batch_size, nframes_max), fake_len)
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
+                
+                
+                loss_fp = ((fake_len.float().mean() - real_len.float().mean()) **2)/10 + \
+                            ((fake_len.float().std() - real_len.float().std()) **2)/10 + \
+                            ((fake_data.float().mean() - real_data.float().mean()) **2) + \
+                            ((fake_data.float().std() - real_data.float().std()) **2)
+                loss_fp = loss_fp / 10
+                
                 loss = _loss - rank_g/10
+                
+                #print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
+                #print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
     
                 reward = -loss.data
                 baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
@@ -874,6 +905,10 @@ if __name__ == '__main__':
                 _rank_g.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
                 rank_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 rank_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+                opt_g.zero_grad()
+                loss_fp.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
+                fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+                fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 '''
                 for p in param_g:
                     p.requires_grad = False
@@ -890,6 +925,8 @@ if __name__ == '__main__':
                             p.grad.data += loss_grad_dict[p]
                         if p in rank_grad_dict:
                             p.grad.data += rank_grad_dict[p]
+                        if p in fp_grad_dict:
+                            p.grad.data += fp_grad_dict[p]
     
                 
                 if not check_grad(param_d):
@@ -905,6 +942,7 @@ if __name__ == '__main__':
                                 TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
                                 TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_grad_norm),
                                 TF.Summary.Value(tag='g_rank_grad_norm', simple_value=rank_grad_norm),
+                                TF.Summary.Value(tag='g_fp_grad_norm', simple_value=fp_grad_norm),
                                 TF.Summary.Value(tag='g_pg_grad_norm', simple_value=pg_grad_norm),
                                 ]
                             ),
