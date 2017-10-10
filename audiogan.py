@@ -528,6 +528,7 @@ d = Discriminator(
 
 def spect_to_audio(spect):
     spect = spect + .5
+    spect = NP.clip(spect, a_min = 0, a_max=None)
     spect = spect * 20
     audio_sample = librosa.istft(spect)
     for i in range(100):
