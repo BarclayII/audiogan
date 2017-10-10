@@ -528,7 +528,7 @@ d = Discriminator(
 
 def spect_to_audio(spect):
     spect = spect + .5
-    spect = spect * 4
+    spect = spect * 20
     audio_sample = librosa.istft(spect)
     for i in range(100):
         w_ = audio_sample
@@ -979,7 +979,7 @@ if __name__ == '__main__':
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :,:fake_len[batch]]
                     add_heatmap_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_spectogram')
-                if gen_iter % 40 == 0:
+                if gen_iter % 200 == 0:
                     for batch in range(batch_size):
                         fake_spect = fake_data[batch, :,:fake_len[batch]]
                         fake_sample = spect_to_audio(fake_spect)
