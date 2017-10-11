@@ -5,8 +5,8 @@ import time
 import h5py
 import sys, os
 import matplotlib.pyplot as PL
-fold = h5py.File('dataset-small.h5','r')
-f = h5py.File("data-spect.h5", "w")
+fold = h5py.File('dataset.h5','r')
+f = h5py.File("data-spect-full.h5", "w")
 
 def boolean_indexing(v):
     lens = np.array([item.shape[1] for item in v])
@@ -22,6 +22,9 @@ keys = fold.keys()
 for key in keys:
     data = fold[key].value
     spect_data = []
+    first = True
+    pos = 0
+    print key
     for idx in range(data.shape[0]):
         x = data[idx,:]
         #x = librosa.load('/tmp/a.wav', sr=8000)[0]  # The input
@@ -29,8 +32,13 @@ for key in keys:
         y = librosa.stft(x)
         y_abs = np.abs(y)
         spect_data.append(y_abs)
-    f[key] = np.stack(spect_data)
-    #spect_data = boolean_indexing(spect_data)
-        #f[str(total_idx)] = y_abs
 
+        if first:
+            f.create_dataset(key, shape=[data.shape[0]] + list(y_abs.shape), compression='gzip')
+            first = False
 
+        if len(spect_data) >= 100 or idx == data.shape[0] - 1:
+            f[key][pos:pos+len(spect_data)] = np.stack(spect_data)
+            pos += len(spect_data)
+            spect_data = []
+            print '\t', pos

@@ -464,6 +464,7 @@ parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
 parser.add_argument('--lambda_rank', type=float, default=10)
+parser.add_argument('--lambda_reg', type=float, default=0.0001)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
@@ -612,6 +613,17 @@ l = 10
 alpha = 0.1
 baseline = None
 
+def stable_reg(cls, weight, input_, fake):
+    reg = 0
+    sigm_cls = F.sigmoid(cls)
+    batch_size = input_.size()[0]
+    for t in range(weight.size()[1]):
+        grad = T.autograd.grad(cls[:, t], input_, grad_outputs=weight[:, t], create_graph=True, retain_graph=True, only_inputs=True)[0]
+        reg += ((1 - sigm_cls[:, t]) if not fake else sigm_cls[:, t]) ** 2 * grad.contiguous().view(batch_size, -1).norm(2, 1) ** 2
+    reg /= weight.data.sum()
+
+    return reg
+
 def discriminate(d, data, length, embed, target, real):
     cls, rank, nframes = d(data, length, embed)
     target = tovar(T.ones(*(cls.size())) * target)
@@ -755,11 +767,15 @@ if __name__ == '__main__':
                 epoch, batch_id, _real_data2, _real_len2, _, _cs2, _cl2 = dataloader.next()
 
             with Timer.new('train_d', print_=False):
-                noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data = tovar(_real_data) + noise
+                #noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
+                #real_data = tovar(_real_data) + noise
+                real_data = tovar(_real_data)
+                real_data.requires_grad = True
                 real_len = tovar(_real_len).long()
-                noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data2 = tovar(_real_data2) + noise
+                #noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
+                #real_data2 = tovar(_real_data2) + noise
+                real_data2 = tovar(_real_data2)
+                real_data2.requires_grad = True
                 real_len2 = tovar(_real_len2).long()
                 cs = tovar(_cs).long()
                 cl = tovar(_cl).long()
@@ -770,7 +786,7 @@ if __name__ == '__main__':
                 embed_g2 = e_g(cs2, cl2)
                 embed_d2 = e_d(cs2, cl2)
 
-                cls_d, _, _, _, loss_d, rank_d, acc_d = \
+                cls_d, _, _, weight_d, loss_d, rank_d, acc_d = \
                         discriminate(d, real_data, real_len, embed_d, 0.9, True)
                 cls_d_x, _, _, _, _, rank_d_x, acc_d_x = \
                         discriminate(d, real_data, real_len, embed_d2, 0.9, True)
@@ -778,15 +794,30 @@ if __name__ == '__main__':
                         discriminate(d, real_data2, real_len2, embed_d, 0.9, True)
 
                 fake_data, _, _, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g2)
-                noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-                fake_data = tovar((fake_data + noise).data)
-                cls_g, _, _, _, loss_g, rank_g, acc_g = \
+                #noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
+                #fake_data = tovar((fake_data + noise).data)
+                fake_data = tovar(fake_data.data)
+                fake_data.requires_grad = True
+                cls_g, _, _, weight_g, loss_g, rank_g, acc_g = \
                         discriminate(d, fake_data, fake_len, embed_d2, 0, False)
 
+                reg_d = stable_reg(cls_d, weight_d, real_data, False)
+                reg_g = stable_reg(cls_g, weight_g, fake_data, True)
+
                 loss_rank = ((1 - rank_d + rank_d_x).clamp(min=0) + (1 - rank_d + rank_d_x2).clamp(min=0)).mean()
-                loss = loss_d + loss_g + loss_rank/10
+                loss = (loss_d + loss_g + args.lambda_reg * (reg_d + reg_g)).mean()
                 opt_d.zero_grad()
-                loss.backward()
+                loss.backward(retain_graph=True)
+                loss_grad_dict = {p: p.grad.data.clone() for p in param_d if p.grad is not None}
+                loss_grad_norm = sum(T.norm(p.grad.data) for p in param_d if p.grad is not None)
+                opt_d.zero_grad()
+                loss_rank.backward(T.Tensor([args.lambda_rank]).cuda())
+                rank_grad_dict = {p: p.grad.data.clone() for p in param_d if p.grad is not None}
+                rank_grad_norm = sum(T.norm(p.grad.data) for p in param_d if p.grad is not None)
+                for p in param_d:
+                    if p.grad is not None:
+                        if p in loss_grad_dict:
+                            p.grad.data += loss_grad_dict[p]
                 if not check_grad(param_d):
                     grad_nan += 1
                     print 'Gradient exploded %d times', grad_nan
@@ -817,7 +848,8 @@ if __name__ == '__main__':
                             TF.Summary.Value(tag='rank_d_x2/std', simple_value=rank_d_x2.std()),
                             TF.Summary.Value(tag='acc_d', simple_value=acc_d),
                             TF.Summary.Value(tag='acc_g', simple_value=acc_g),
-                            TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
+                            TF.Summary.Value(tag='d_loss_grad_norm', simple_value=loss_grad_norm),
+                            TF.Summary.Value(tag='d_rank_grad_norm', simple_value=rank_grad_norm),
                             ]
                         ),
                     dis_iter
@@ -851,7 +883,7 @@ if __name__ == '__main__':
                 embed_g = e_g(cs, cl)
                 embed_d = e_d(cs, cl)
                 fake_data, fake_s, fake_stop_list, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g)
-                noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
+                noise = 0#tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data += noise
                 
                 cls_g, rank_g, nframes_g = d(fake_data, fake_len, embed_d)
