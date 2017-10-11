@@ -341,8 +341,9 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = self.proj(lstm_h[-1])
-            logit_s_t = self.stopper(lstm_h[-1]) - 2.5
+            x_t = (self.proj(lstm_h[-1]) - 2).tanh_()
+            x_t = x_t  / 1.9
+            logit_s_t = self.stopper(lstm_h[-1]) - 2
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -458,12 +459,11 @@ parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=0.1)
+parser.add_argument('--noisescale', type=float, default=0.01)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
-parser.add_argument('--lambda_fp', type=float, default=0.1)
-parser.add_argument('--lambda_rank', type=float, default=1)
+parser.add_argument('--lambda_rank', type=float, default=10)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
@@ -473,7 +473,7 @@ args.conditional = True
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-lambda_fp = args.lambda_fp
+lambda_fp = 1
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
     modelnameload = None
@@ -528,6 +528,7 @@ d = Discriminator(
 
 def spect_to_audio(spect):
     spect = spect + .5
+    spect = NP.clip(spect, a_min = 0, a_max=None)
     spect = spect * 20
     audio_sample = librosa.istft(spect)
     for i in range(100):
@@ -823,16 +824,13 @@ if __name__ == '__main__':
                     )
 
             accs = [acc_d, acc_g]
-            if 0:
+            if batch_id % 10 == 0:
                 print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
-            else:
-                if batch_id % 10 == 0:
-                    print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
-                    print 'lengths'
-                    print 'fake', list(fake_len.data)
-                    print 'real', list(real_len.data)
-                    print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
-                    print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
+                print 'lengths'
+                print 'fake', list(fake_len.data)
+                print 'real', list(real_len.data)
+                print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
+                print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
 
             if acc_d > 0.5 and acc_g > 0.5:
                 break
@@ -875,17 +873,17 @@ if __name__ == '__main__':
                 nframes_max = fake_len.data.max()
                 weight_r = length_mask((batch_size, nframes_max), fake_len)
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-                _loss = _loss / 3
+                
                 
                 loss_fp_data = ((fake_data.float().mean() - real_data.float().mean()) **2) + \
                             ((fake_data.float().std() - real_data.float().std()) **2)
                             
-                loss_fp_len = ((fake_len.float().mean() - real_len.float().mean()))**2 + \
-                            ((fake_len.float().std() - real_len.float().std()))**2
+                loss_fp_len = T.abs((fake_len.float().mean() - real_len.float().mean())) + \
+                            T.abs((fake_len.float().std() - real_len.float().std()))
                            
                             
-                loss_fp_data = loss_fp_data * lambda_fp
-                loss_fp_len = loss_fp_len / 10
+                loss_fp = loss_fp_data / 10
+                loss_fp_len = loss_fp_len / 3
                 
                 loss = _loss - rank_g/10
                 
@@ -893,10 +891,7 @@ if __name__ == '__main__':
                 #print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
     
                 reward = -loss.data - loss_fp_len.data
-                if gen_iter < 100:
-                    baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
-                else:
-                    baseline = reward.mean() if baseline is None else (baseline * 0.8 + reward.mean() * 0.2)
+                baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
                 d_train_writer.add_summary(
                         TF.Summary(
                             value=[
@@ -981,6 +976,7 @@ if __name__ == '__main__':
                 embed_g = e_g(cseq_fixed, clen_fixed)
                 fake_data, _, _, fake_len, fake_p = g(z=z_fixed, c=embed_g)
                 fake_data, fake_len = tonumpy(fake_data, fake_len)
+    
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :,:fake_len[batch]]
                     add_heatmap_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_spectogram')
