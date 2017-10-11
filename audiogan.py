@@ -246,6 +246,13 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].contiguous().view(batch_size, output_size)
 
+def moment(x, exp=4):
+    m = x.mean().expand_as(x)
+    diff = x - m
+    diff_exp = diff ** exp
+    total = diff_exp.sum()
+    return total ** (1./exp)
+
 def calc_dists(hidden_states, hidden_state_lengths):
     def kurt(x, dim):
         return (((x - x.mean(dim, True)) ** 4).sum(dim) / x.size()[dim]) ** 0.25
@@ -468,7 +475,7 @@ parser.add_argument('--noisescale', type=float, default=0.01)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
 parser.add_argument('--lambda_pg', type=float, default=0.01)
-parser.add_argument('--lambda_rank', type=float, default=10)
+parser.add_argument('--lambda_rank', type=float, default=1)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
@@ -881,13 +888,14 @@ if __name__ == '__main__':
                 
                 
                 loss_fp_data = ((fake_data.float().mean() - real_data.float().mean()) **2) + \
-                            ((fake_data.float().std() - real_data.float().std()) **2)
+                            ((fake_data.float().std() - real_data.float().std()) **2) + \
+                            ((moment(fake_data.float(),4) - moment(real_data.float(),4)) **2)
                             
                 loss_fp_len = T.abs((fake_len.float().mean() - real_len.float().mean())) + \
                             T.abs((fake_len.float().std() - real_len.float().std()))
                            
                             
-                loss_fp = loss_fp_data / 10
+                loss_fp_data = loss_fp_data / 30
                 loss_fp_len = loss_fp_len / 3
                 
                 loss = _loss - rank_g/10
