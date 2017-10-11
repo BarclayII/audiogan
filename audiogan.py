@@ -891,7 +891,10 @@ if __name__ == '__main__':
                 #print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
     
                 reward = -loss.data - loss_fp_len.data
-                baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
+                if gen_iter < 100:
+                    baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
+                else:
+                    baseline = reward.mean() if baseline is None else (baseline * 0.8 + reward.mean() * 0.2)
                 d_train_writer.add_summary(
                         TF.Summary(
                             value=[
