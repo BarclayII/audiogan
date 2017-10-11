@@ -6,7 +6,7 @@ import h5py
 import sys, os
 import matplotlib.pyplot as PL
 fold = h5py.File('dataset-small.h5','r')
-f = h5py.File("data-spect.h5", "w")
+#f = h5py.File("data-spect.h5", "w")
 
 def boolean_indexing(v):
     lens = np.array([item.shape[1] for item in v])
