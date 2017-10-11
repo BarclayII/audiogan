@@ -298,6 +298,8 @@ class Generator(NN.Module):
         self.proj = NN.DataParallel(NN.Sequential(
                 NN.Linear(state_size, state_size),
                 NN.LeakyReLU(),
+                Residual(state_size),
+                Residual(state_size),
                 NN.Linear(state_size, frame_size),
                 ))
         self.stopper = NN.DataParallel(NN.Sequential(
@@ -309,6 +311,9 @@ class Generator(NN.Module):
         init_weights(self.proj)
         init_weights(self.stopper)
         self.sigmoid = NN.Sigmoid()
+        self.tanh_scale = NN.Parameter(T.ones(1))
+        self.tanh_bias = NN.Parameter(T.zeros(1))
+    
     def forward(self, batch_size=None, length=None, z=None, c=None):
         frame_size = self._frame_size
         noise_size = self._noise_size
@@ -341,8 +346,8 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = (self.proj(lstm_h[-1]) - 2).tanh_()
-            x_t = x_t  / 1.9
+            x_t = self.proj(lstm_h[-1])
+            x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/100
             logit_s_t = self.stopper(lstm_h[-1]) - 2
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
@@ -462,7 +467,7 @@ parser.add_argument('--maxlen', type=int, default=30, help='maximum sample lengt
 parser.add_argument('--noisescale', type=float, default=0.01)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
-parser.add_argument('--lambda_pg', type=float, default=0.1)
+parser.add_argument('--lambda_pg', type=float, default=0.01)
 parser.add_argument('--lambda_rank', type=float, default=10)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)

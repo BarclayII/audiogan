@@ -61,10 +61,10 @@ def _pick_sample_from_word(key, maxlen, dataset, frame_size=None, skip_samples=F
     return sample_out, length
 
 def transform(x):
-    return x - 0.5
+    return NP.log(x+1e-4)/10
 
 def invtransform(x):
-    return x + 0.5
+    return NP.exp(x*10) - 1e-4
 
 def pick_word(maxlen, dataset, keys, maxcharlen, args, frame_size=None, skip_samples=False):
     while True:
@@ -75,7 +75,7 @@ def pick_word(maxlen, dataset, keys, maxcharlen, args, frame_size=None, skip_sam
                 maxabs = NP.abs(sample_out).max()
                 if maxabs == 0:
                     continue
-                sample_out = transform(sample_out / maxabs)
+                sample_out = transform(sample_out)
             break
 
     return key, word_to_seq(key, maxcharlen), len(key), sample_out, length
