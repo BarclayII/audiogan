@@ -341,8 +341,7 @@ class Generator(NN.Module):
             lstm_h[0], lstm_c[0] = self.rnn[0](_x, (lstm_h[0], lstm_c[0]))
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
-            x_t = (self.proj(lstm_h[-1]) - 2).tanh_()
-            x_t = x_t  / 1.9
+            x_t = self.proj(lstm_h[-1])
             logit_s_t = self.stopper(lstm_h[-1]) - 2
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
@@ -824,13 +823,16 @@ if __name__ == '__main__':
                     )
 
             accs = [acc_d, acc_g]
-            if batch_id % 10 == 0:
+            if 1:
                 print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
-                print 'lengths'
-                print 'fake', list(fake_len.data)
-                print 'real', list(real_len.data)
-                print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
-                print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
+            else:
+                if batch_id % 10 == 0:
+                    print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
+                    print 'lengths'
+                    print 'fake', list(fake_len.data)
+                    print 'real', list(real_len.data)
+                    print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
+                    print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
 
             if acc_d > 0.5 and acc_g > 0.5:
                 break
@@ -976,7 +978,6 @@ if __name__ == '__main__':
                 embed_g = e_g(cseq_fixed, clen_fixed)
                 fake_data, _, _, fake_len, fake_p = g(z=z_fixed, c=embed_g)
                 fake_data, fake_len = tonumpy(fake_data, fake_len)
-    
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :,:fake_len[batch]]
                     add_heatmap_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_spectogram')
