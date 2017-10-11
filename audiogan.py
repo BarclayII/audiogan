@@ -889,13 +889,13 @@ if __name__ == '__main__':
                 
                 loss_fp_data = ((fake_data.float().mean() - real_data.float().mean()) **2) + \
                             ((fake_data.float().std() - real_data.float().std()) **2) + \
-                            ((moment(fake_data.float(),4) - moment(real_data.float(),4)) **2)
+                            ((moment(fake_data.float(),4) - moment(real_data.float(),4)) **2)/10
                             
                 loss_fp_len = T.abs((fake_len.float().mean() - real_len.float().mean())) + \
                             T.abs((fake_len.float().std() - real_len.float().std()))
                            
                             
-                loss_fp_data = loss_fp_data / 30
+                loss_fp_data = loss_fp_data / 100
                 loss_fp_len = loss_fp_len / 3
                 
                 loss = _loss - rank_g/10
