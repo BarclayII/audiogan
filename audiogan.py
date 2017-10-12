@@ -360,7 +360,7 @@ class Generator(NN.Module):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.proj(lstm_h[-1])
             x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/100
-            logit_s_t = self.stopper(lstm_h[-1]) - 2
+            logit_s_t = self.stopper(lstm_h[-1]) - 4
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
