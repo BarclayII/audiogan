@@ -327,11 +327,12 @@ class Generator(NN.Module):
         '''
         self.proj = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
-                NN.Linear(state_size, frame_size),
-                NN.LeakyReLU(),
+                Residual(state_size),
+                Residual(state_size),
                 Residual(frame_size, relu=False),
                 ))
         self.stopper = NN.DataParallel(NN.Sequential(
+                Residual(state_size),
                 NN.Linear(state_size, state_size/2),
                 NN.LeakyReLU(),
                 Residual(state_size/2),
@@ -386,8 +387,9 @@ class Generator(NN.Module):
 
             logp_t = T.cat([s1_t, s_t], 1)
             p_t = logp_t.exp()
-            p_t[:,0] = p_t[:,0] + .03
-            p_t[:,1] = p_t[:,1] + .01
+            #p_t[:,0] = p_t[:,0] + .03
+            #p_t[:,1] = p_t[:,1] + .01
+            p_t = p_t + 0.01
             stop_t = p_t.multinomial()
             length += generating
 
@@ -396,7 +398,8 @@ class Generator(NN.Module):
             stop_list.append(stop_t)
             p_list.append(p_t)
             stop_t = stop_t.squeeze()
-            generating *= (stop_t.data == 0).long().cpu()
+            if t > 2:
+                generating *= (stop_t.data == 0).long().cpu()
             if generating.sum() == 0:
                 break
 
@@ -480,7 +483,7 @@ parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=1025, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
