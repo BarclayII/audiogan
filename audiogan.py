@@ -258,6 +258,18 @@ def moment(x, exp,lengths):
     mean_exp = exp_diff.sum() / lengths.float().sum()/x_size
     return mean_exp ** (1./exp)
 
+def moment_by_index(x, exp,lengths):
+    x_size = tonumpy(x.size()[1])
+    mask = length_mask((x.size()[0], x.size()[2]),lengths).unsqueeze(1)
+    x = x * mask
+    m = x.sum(0).sum(1)/lengths.float()
+    if exp == 1:
+        return m
+    total_diff = (x - m.unsqueeze(0).unsqueeze(2)) * mask
+    exp_diff = total_diff ** exp
+    mean_exp = exp_diff.sum(0).sum(1) / lengths.float()
+    return mean_exp ** (1./exp)
+
 def calc_dists(hidden_states, hidden_state_lengths):
     def kurt(x, dim):
         return (((x - x.mean(dim, True)) ** 4).sum(dim) / x.size()[dim]) ** 0.25
@@ -893,11 +905,11 @@ if __name__ == '__main__':
                 weight_r = length_mask((batch_size, nframes_max), fake_len)
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
                 
-                
-                loss_fp_data = ((moment(fake_data.float(),1, fake_len) - moment(real_data.float(),1,real_len)) **2) + \
-                            ((moment(fake_data.float(),2, fake_len) - moment(real_data.float(),2,real_len)) **2) + \
-                            ((moment(fake_data.float(),4, fake_len) - moment(real_data.float(),4,real_len)) **2) + \
-                            ((moment(fake_data.float(),6, fake_len) - moment(real_data.float(),6,real_len)) **2)
+                loss_fp_data = 0
+                for exp in [1,2,4,5]:
+                    loss_fp_data += (moment(fake_data.float(),1, fake_len) - moment(real_data.float(),1,real_len)) **2
+                    loss_fp_data += ((moment_by_index(fake_data.float(),1, fake_len) - 
+                                      moment_by_index(real_data.float(),1,real_len)) **2).sum()
                             
                 loss_fp_len = T.abs((fake_len.float().mean() - real_len.float().mean())) + \
                             T.abs((fake_len.float().std() - real_len.float().std()))
