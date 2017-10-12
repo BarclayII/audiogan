@@ -386,6 +386,8 @@ class Generator(NN.Module):
 
             logp_t = T.cat([s1_t, s_t], 1)
             p_t = logp_t.exp()
+            p_t[:,0] = p_t[:,0] + .03
+            p_t[:,1] = p_t[:,1] + .01
             stop_t = p_t.multinomial()
             length += generating
 
@@ -394,8 +396,7 @@ class Generator(NN.Module):
             stop_list.append(stop_t)
             p_list.append(p_t)
             stop_t = stop_t.squeeze()
-            if t > 1:
-                generating *= (stop_t.data == 0).long().cpu()
+            generating *= (stop_t.data == 0).long().cpu()
             if generating.sum() == 0:
                 break
 
@@ -484,8 +485,8 @@ parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
-parser.add_argument('--dlr', type=float, default=1e-4)
-parser.add_argument('--glr', type=float, default=1e-4)
+parser.add_argument('--dlr', type=float, default=1e-3)
+parser.add_argument('--glr', type=float, default=1e-3)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
@@ -879,7 +880,7 @@ if __name__ == '__main__':
             p.requires_grad = True
         for p in param_d:
             p.requires_grad = False
-        if gen_iter < 10000:
+        if gen_iter + args.loaditerations < 10000:
             creating_baseline = 1
         for _ in range(args.gencatchup):
             gen_iter += 1
@@ -917,12 +918,12 @@ if __name__ == '__main__':
                 _loss /= 3
                 loss_fp_data = 0
                 for exp in [1,2,4,6]:
-                    loss_fp_data += (moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **2
-                    loss_fp_data += ((moment_by_index(fake_data.float(),exp, fake_len) - 
-                                      moment_by_index(real_data.float(),exp,real_len)) **2).mean()
+                    loss_fp_data += T.abs(moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **1.5
+                    loss_fp_data += (T.abs(moment_by_index(fake_data.float(),exp, fake_len) - 
+                                      moment_by_index(real_data.float(),exp,real_len))**1.5).mean()
                             
-                loss_fp_len = ((fake_len.float().mean() - real_len.float().mean()))**2 + \
-                            ((fake_len.float().std() - real_len.float().std()))**2
+                loss_fp_len = T.abs(fake_len.float().mean() - real_len.float().mean())**1.5 + \
+                            T.abs(fake_len.float().std() - real_len.float().std())**1.5
                            
                             
                 loss_fp_data = loss_fp_data / 10
@@ -938,7 +939,7 @@ if __name__ == '__main__':
                     baseline = reward.mean() if baseline is None else (baseline * 0.2 + reward.mean() * 0.8)
                     creating_baseline = 0
                 else:
-                    if gen_iter < 100:
+                    if gen_iter + args.loaditerations < 100:
                         baseline = baseline * 0.5 + reward.mean() * 0.5
                     else:
                         baseline = baseline * 0.8 + reward.mean() * 0.2
@@ -968,6 +969,8 @@ if __name__ == '__main__':
                 _rank_g = -(rank_g/10).mean()
                 for i, fake_stop in enumerate(fake_stop_list):
                     fake_stop.reinforce(args.lambda_pg * reward[:, i:i+1])
+                    # this is where you put the reward-baseline crapand
+                    # like if the reward - baseline is big, then it is good..... so you... backpropogate to say 
                 # Debug the gradient norms
                 opt_g.zero_grad()
                 _loss.backward(retain_graph=True)
