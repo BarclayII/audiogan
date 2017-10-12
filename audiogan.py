@@ -201,14 +201,20 @@ def init_weights(module):
 
 
 class Residual(NN.Module):
-    def __init__(self,size):
+    def __init__(self,size, relu = True):
         NN.Module.__init__(self)
         self.size = size
         self.linear = NN.Linear(size, size)
-        self.relu = NN.LeakyReLU()
+        if relu:
+            self.relu = NN.LeakyReLU()
+        else:
+            self.relu = False
 
     def forward(self, x):
-        return self.relu(self.linear(x) + x)
+        if self.relu:
+            return self.relu(self.linear(x) + x)
+        else:
+            return self.linear(x) + x
 
 
 class Embedder(NN.Module):
@@ -320,23 +326,24 @@ class Generator(NN.Module):
         self.stopper = NN.DataParallel(NN.Linear(state_size, 1))
         '''
         self.proj = NN.DataParallel(NN.Sequential(
-                NN.Linear(state_size, state_size),
-                NN.LeakyReLU(),
-                Residual(state_size),
                 Residual(state_size),
                 NN.Linear(state_size, frame_size),
+                NN.LeakyReLU(),
+                Residual(frame_size, relu=False),
                 ))
         self.stopper = NN.DataParallel(NN.Sequential(
                 NN.Linear(state_size, state_size/2),
                 NN.LeakyReLU(),
+                Residual(state_size/2),
                 NN.Linear(state_size/2, 1),
                 ))
         
         init_weights(self.proj)
         init_weights(self.stopper)
         self.sigmoid = NN.Sigmoid()
-        self.tanh_scale = NN.Parameter(T.ones(1))
-        self.tanh_bias = NN.Parameter(T.zeros(1))
+        self.Softplus = NN.Softplus()
+        #self.tanh_scale = NN.Parameter(T.ones(1))
+        #self.tanh_bias = NN.Parameter(T.zeros(1))
     
     def forward(self, batch_size=None, length=None, z=None, c=None):
         frame_size = self._frame_size
@@ -371,7 +378,8 @@ class Generator(NN.Module):
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.proj(lstm_h[-1])
-            x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/10
+            x_t = self.Softplus(x_t) - 1.1
+            #x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/10
             logit_s_t = self.stopper(lstm_h[-1]) - 2
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
@@ -472,7 +480,7 @@ parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
-parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
@@ -490,12 +498,12 @@ parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=50, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.01)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
-parser.add_argument('--require_acc', type=float, default=0.5)
+parser.add_argument('--require_acc', type=float, default=0.7)
 parser.add_argument('--lambda_pg', type=float, default=0.01)
 parser.add_argument('--lambda_rank', type=float, default=1)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
-parser.add_argument('--gencatchup', type=int, default=1)
+parser.add_argument('--gencatchup', type=int, default=5)
 
 args = parser.parse_args()
 args.conditional = True
@@ -638,6 +646,7 @@ gen_iter = 0
 dis_iter = 0
 epoch = 1
 l = 10
+creating_baseline = 1
 alpha = 0.1
 baseline = None
 
@@ -853,7 +862,7 @@ if __name__ == '__main__':
                     )
 
             accs = [acc_d, acc_g]
-            if batch_id % 4 == 0:
+            if batch_id % 1 == 0:
                 print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
                 print 'lengths'
                 print 'fake', list(fake_len.data)
@@ -863,14 +872,15 @@ if __name__ == '__main__':
                 print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), \
                     tonumpy(moment(real_data.float(),1, real_len)), tonumpy(moment(real_data.float(),2, real_len))
 
-            if acc_d > 0.5 and acc_g > 0.5:
+            if acc_d > args.require_acc and acc_g > args.require_acc:
                 break
 
         for p in param_g:
             p.requires_grad = True
         for p in param_d:
             p.requires_grad = False
-        
+        if gen_iter < 10000:
+            creating_baseline = 1
         for _ in range(args.gencatchup):
             gen_iter += 1
             
@@ -904,19 +914,19 @@ if __name__ == '__main__':
                 nframes_max = fake_len.data.max()
                 weight_r = length_mask((batch_size, nframes_max), fake_len)
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-                
+                _loss /= 3
                 loss_fp_data = 0
                 for exp in [1,2,4,6]:
                     loss_fp_data += (moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **2
                     loss_fp_data += ((moment_by_index(fake_data.float(),exp, fake_len) - 
                                       moment_by_index(real_data.float(),exp,real_len)) **2).mean()
                             
-                loss_fp_len = T.abs((fake_len.float().mean() - real_len.float().mean())) + \
-                            T.abs((fake_len.float().std() - real_len.float().std()))
+                loss_fp_len = ((fake_len.float().mean() - real_len.float().mean()))**2 + \
+                            ((fake_len.float().std() - real_len.float().std()))**2
                            
                             
                 loss_fp_data = loss_fp_data / 10
-                loss_fp_len = loss_fp_len / 3
+                loss_fp_len = loss_fp_len / 10
                 
                 loss = _loss - rank_g/10
                 
@@ -924,10 +934,14 @@ if __name__ == '__main__':
                 #print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
     
                 reward = -loss.data - loss_fp_len.data
-                if gen_iter < 100:
-                    baseline = reward.mean() if baseline is None else (baseline * 0.5 + reward.mean() * 0.5)
+                if creating_baseline:
+                    baseline = reward.mean() if baseline is None else (baseline * 0.2 + reward.mean() * 0.8)
+                    creating_baseline = 0
                 else:
-                    baseline = reward.mean() if baseline is None else (baseline * 0.8 + reward.mean() * 0.2)
+                    if gen_iter < 100:
+                        baseline = baseline * 0.5 + reward.mean() * 0.5
+                    else:
+                        baseline = baseline * 0.8 + reward.mean() * 0.2
                 d_train_writer.add_summary(
                         TF.Summary(
                             value=[
