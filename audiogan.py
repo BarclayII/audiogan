@@ -262,12 +262,12 @@ def moment_by_index(x, exp,lengths):
     x_size = tonumpy(x.size()[1])
     mask = length_mask((x.size()[0], x.size()[2]),lengths).unsqueeze(1)
     x = x * mask
-    m = x.sum(0).sum(1)/lengths.float()
+    m = x.sum(0).sum(1)/lengths.sum().float()
     if exp == 1:
         return m
     total_diff = (x - m.unsqueeze(0).unsqueeze(2)) * mask
     exp_diff = total_diff ** exp
-    mean_exp = exp_diff.sum(0).sum(1) / lengths.float()
+    mean_exp = exp_diff.sum(0).sum(1) / lengths.sum().float()
     return mean_exp ** (1./exp)
 
 def calc_dists(hidden_states, hidden_state_lengths):
@@ -371,8 +371,8 @@ class Generator(NN.Module):
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.proj(lstm_h[-1])
-            x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/100
-            logit_s_t = self.stopper(lstm_h[-1]) - 4
+            x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/10
+            logit_s_t = self.stopper(lstm_h[-1]) - 2
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -466,7 +466,7 @@ class Discriminator(NN.Module):
         return classifier_out, ranking, nframes
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=10, type=int)
+parser.add_argument('--critic_iter', default=100, type=int)
 parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
@@ -853,7 +853,7 @@ if __name__ == '__main__':
                     )
 
             accs = [acc_d, acc_g]
-            if batch_id % 10 == 0:
+            if batch_id % 4 == 0:
                 print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
                 print 'lengths'
                 print 'fake', list(fake_len.data)
@@ -906,10 +906,10 @@ if __name__ == '__main__':
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
                 
                 loss_fp_data = 0
-                for exp in [1,2,4,5]:
-                    loss_fp_data += (moment(fake_data.float(),1, fake_len) - moment(real_data.float(),1,real_len)) **2
-                    loss_fp_data += ((moment_by_index(fake_data.float(),1, fake_len) - 
-                                      moment_by_index(real_data.float(),1,real_len)) **2).sum()
+                for exp in [1,2,4,6]:
+                    loss_fp_data += (moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **2
+                    loss_fp_data += ((moment_by_index(fake_data.float(),exp, fake_len) - 
+                                      moment_by_index(real_data.float(),exp,real_len)) **2).mean()
                             
                 loss_fp_len = T.abs((fake_len.float().mean() - real_len.float().mean())) + \
                             T.abs((fake_len.float().std() - real_len.float().std()))
