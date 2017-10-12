@@ -246,12 +246,17 @@ class Embedder(NN.Module):
         h = h.permute(1, 0, 2)
         return h[:, -2:].contiguous().view(batch_size, output_size)
 
-def moment(x, exp=4):
-    m = x.mean().expand_as(x)
-    diff = x - m
-    diff_exp = diff ** exp
-    total = diff_exp.sum()
-    return total ** (1./exp)
+def moment(x, exp,lengths):
+    x_size = tonumpy(x.size()[1])
+    mask = length_mask((x.size()[0], x.size()[2]),lengths).unsqueeze(1)
+    x = x * mask
+    m = x.sum()/lengths.float().sum()/x_size
+    if exp == 1:
+        return m
+    total_diff = (x - m.expand_as(x)) * mask
+    exp_diff = total_diff ** exp
+    mean_exp = exp_diff.sum() / lengths.float().sum()/x_size
+    return mean_exp ** (1./exp)
 
 def calc_dists(hidden_states, hidden_state_lengths):
     def kurt(x, dim):
@@ -455,7 +460,7 @@ parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
-parser.add_argument('--dstatesize', type=int, default=256, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
@@ -470,7 +475,7 @@ parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
-parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
+parser.add_argument('--maxlen', type=int, default=50, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=0.01)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
@@ -841,8 +846,10 @@ if __name__ == '__main__':
                 print 'lengths'
                 print 'fake', list(fake_len.data)
                 print 'real', list(real_len.data)
-                print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
-                print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
+                print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), \
+                    tonumpy(moment(fake_data.float(),1, fake_len)), tonumpy(moment(fake_data.float(),2, fake_len))
+                print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), \
+                    tonumpy(moment(real_data.float(),1, real_len)), tonumpy(moment(real_data.float(),2, real_len))
 
             if acc_d > 0.5 and acc_g > 0.5:
                 break
@@ -887,15 +894,16 @@ if __name__ == '__main__':
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
                 
                 
-                loss_fp_data = ((fake_data.float().mean() - real_data.float().mean()) **2) + \
-                            ((fake_data.float().std() - real_data.float().std()) **2) + \
-                            ((moment(fake_data.float(),4) - moment(real_data.float(),4)) **2)/10
+                loss_fp_data = ((moment(fake_data.float(),1, fake_len) - moment(real_data.float(),1,real_len)) **2) + \
+                            ((moment(fake_data.float(),2, fake_len) - moment(real_data.float(),2,real_len)) **2) + \
+                            ((moment(fake_data.float(),4, fake_len) - moment(real_data.float(),4,real_len)) **2) + \
+                            ((moment(fake_data.float(),6, fake_len) - moment(real_data.float(),6,real_len)) **2)
                             
                 loss_fp_len = T.abs((fake_len.float().mean() - real_len.float().mean())) + \
                             T.abs((fake_len.float().std() - real_len.float().std()))
                            
                             
-                loss_fp_data = loss_fp_data / 100
+                loss_fp_data = loss_fp_data / 10
                 loss_fp_len = loss_fp_len / 3
                 
                 loss = _loss - rank_g/10
