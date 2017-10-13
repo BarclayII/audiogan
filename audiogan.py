@@ -331,8 +331,7 @@ class Generator(NN.Module):
         self.proj = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
                 Residual(state_size),
-                Residual(state_size),
-                Residual(frame_size, relu=False),
+                NN.Linear(state_size, frame_size),
                 ))
         self.stopper = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
@@ -483,7 +482,7 @@ parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--gstatesize', type=int, default=1025, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
