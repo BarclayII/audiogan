@@ -378,7 +378,6 @@ class Generator(NN.Module):
             for i in range(1, num_layers):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.proj(lstm_h[-1])
-            x_t = self.Softplus(x_t) - 1.1
             #x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/10
             logit_s_t = self.stopper(lstm_h[-1])
             s_t = log_sigmoid(logit_s_t)
