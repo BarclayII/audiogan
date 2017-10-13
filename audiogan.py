@@ -12,6 +12,9 @@ from torch.nn.utils import weight_norm as torch_weight_norm
 import numpy as NP
 import numpy.random as RNG
 import tensorflow as TF     # for Tensorboard
+from numpy import rate
+
+NP.set_printoptions(suppress=True)
 
 import argparse
 import sys
@@ -333,10 +336,7 @@ class Generator(NN.Module):
                 ))
         self.stopper = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
-                NN.Linear(state_size, state_size/2),
-                NN.LeakyReLU(),
-                Residual(state_size/2),
-                NN.Linear(state_size/2, 1),
+                NN.Linear(state_size, 1),
                 ))
         
         init_weights(self.proj)
@@ -381,15 +381,15 @@ class Generator(NN.Module):
             x_t = self.proj(lstm_h[-1])
             x_t = self.Softplus(x_t) - 1.1
             #x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/10
-            logit_s_t = self.stopper(lstm_h[-1]) - 2
+            logit_s_t = self.stopper(lstm_h[-1])/100
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
             logp_t = T.cat([s1_t, s_t], 1)
             p_t = logp_t.exp()
-            #p_t[:,0] = p_t[:,0] + .03
-            #p_t[:,1] = p_t[:,1] + .01
-            p_t = p_t + 0.01
+            #how can i add to only one index without crashing it?
+            p_t = p_t + tovar(NP.array([.1, 0.02])).unsqueeze(0)
+            #p_t = p_t + 0.03
             stop_t = p_t.multinomial()
             length += generating
 
@@ -488,7 +488,7 @@ parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
-parser.add_argument('--dlr', type=float, default=1e-3)
+parser.add_argument('--dlr', type=float, default=1e-4)
 parser.add_argument('--glr', type=float, default=1e-3)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
@@ -650,7 +650,6 @@ gen_iter = 0
 dis_iter = 0
 epoch = 1
 l = 10
-creating_baseline = 1
 alpha = 0.1
 baseline = None
 
@@ -883,8 +882,6 @@ if __name__ == '__main__':
             p.requires_grad = True
         for p in param_d:
             p.requires_grad = False
-        if gen_iter + args.loaditerations < 10000:
-            creating_baseline = 1
         for _ in range(args.gencatchup):
             gen_iter += 1
             
@@ -925,27 +922,22 @@ if __name__ == '__main__':
                     loss_fp_data += (T.abs(moment_by_index(fake_data.float(),exp, fake_len) - 
                                       moment_by_index(real_data.float(),exp,real_len))**1.5).mean()
                             
-                loss_fp_len = T.abs(fake_len.float().mean() - real_len.float().mean())**1.5 + \
-                            T.abs(fake_len.float().std() - real_len.float().std())**1.5
-                           
+                #loss_fp_len = T.abs(fake_len.float().mean() - real_len.float().mean())**1.5 + \
+                #            T.abs(fake_len.float().std() - real_len.float().std())**1.5
                             
                 loss_fp_data = loss_fp_data / 10
-                loss_fp_len = loss_fp_len / 10
+                #loss_fp_len = loss_fp_len / 10
                 
                 loss = _loss - rank_g/10
                 
                 #print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
                 #print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
     
-                reward = -loss.data - loss_fp_len.data
-                if creating_baseline:
-                    baseline = reward.mean() if baseline is None else (baseline * 0.2 + reward.mean() * 0.8)
-                    creating_baseline = 0
+                reward = -loss.data# - loss_fp_len.data
+                if gen_iter + args.loaditerations < 1000:
+                    baseline = reward.mean() if baseline is None else baseline * 0.5 + reward.mean() * 0.5
                 else:
-                    if gen_iter + args.loaditerations < 100:
-                        baseline = baseline * 0.5 + reward.mean() * 0.5
-                    else:
-                        baseline = baseline * 0.8 + reward.mean() * 0.2
+                    baseline = baseline * 0.7 + reward.mean() * 0.3
                 d_train_writer.add_summary(
                         TF.Summary(
                             value=[
