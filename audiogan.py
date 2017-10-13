@@ -397,8 +397,7 @@ class Generator(NN.Module):
             stop_list.append(stop_t)
             p_list.append(p_t)
             stop_t = stop_t.squeeze()
-            if t > 2:
-                generating *= (stop_t.data == 0).long().cpu()
+            generating *= (stop_t.data == 0).long().cpu()
             if generating.sum() == 0:
                 break
 
