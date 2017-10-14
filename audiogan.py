@@ -700,7 +700,7 @@ if __name__ == '__main__':
     for p in param_d:
         p.requires_grad = True
     opt_g = T.optim.RMSprop(param_g, lr=args.glr)
-    opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
+    opt_d = T.optim.RMSprop(param_d, lr=args.dlr,weight_decay=1e-4)
 
 
 #    if not args.pretrain_d and not modelnameload:
