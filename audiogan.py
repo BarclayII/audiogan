@@ -202,7 +202,6 @@ def init_weights(module):
         elif name.find('bias') != -1:
             INIT.constant(param.data, 0)
 
-
 class Residual(NN.Module):
     def __init__(self,size, relu = True):
         NN.Module.__init__(self)
@@ -218,6 +217,16 @@ class Residual(NN.Module):
             return self.relu(self.linear(x) + x)
         else:
             return self.linear(x) + x
+
+class ConvMask(NN.Module):
+    def __init__(self):
+        NN.Module.__init__(self)
+
+    def forward(self, x):
+        global convlengths
+        mask = length_mask((x.size()[0], x.size()[2]),convlengths).unsqueeze(1)
+        x = x * mask
+        return x
 
 
 class Embedder(NN.Module):
@@ -386,7 +395,7 @@ class Generator(NN.Module):
             logp_t = T.cat([s1_t, s_t], 1)
             p_t = logp_t.exp()
             #how can i add to only one index without crashing it?
-            p_t = p_t + tovar(NP.array([.1, 0.02])).unsqueeze(0)
+            p_t = p_t + tovar(NP.array([.5, 0.02])).unsqueeze(0)
             #p_t = p_t + 0.03
             stop_t = p_t.multinomial()
             length += generating
@@ -438,24 +447,27 @@ class Discriminator(NN.Module):
                 NN.Linear(state_size, embed_size),
                 ))
         self.conv = NN.DataParallel(NN.Sequential(
+                ConvMask(),
                 NN.Conv1d(1025, 1025, kernel_size=3, stride=1, padding=1),
+                NN.LeakyReLU(),
+                ConvMask(),
                 NN.Conv1d(1025, 1025, kernel_size=3, stride=1, padding=1),
-                NN.Conv1d(1025, 1025, kernel_size=3, stride=1, padding=1),
-                
+                NN.LeakyReLU(),
+                ConvMask(),
                 ))
         init_weights(self.classifier)
         init_weights(self.encoder)
 
     def forward(self, x, length, c, percent_used = 0.1):
+        global convlengths
         frame_size = self._frame_size
         state_size = self._state_size
         num_layers = self._num_layers
         embed_size = self._embed_size
         batch_size, nfreq, maxlen = x.size()
         
-        mask = length_mask((x.size()[0], x.size()[2]),lengths).unsqueeze(1)
-        x = x * mask
         
+        convlengths = lengths
         x = self.conv(x)
         
         xold = x
