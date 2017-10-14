@@ -503,7 +503,7 @@ parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--gstatesize', type=int, default=2048, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=1400, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
@@ -520,9 +520,9 @@ parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=0.1)
+parser.add_argument('--noisescale', type=float, default=0.5)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
-parser.add_argument('--require_acc', type=float, default=0.6)
+parser.add_argument('--require_acc', type=float, default=0.7)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
 parser.add_argument('--lambda_rank', type=float, default=1)
 parser.add_argument('--pretrain_d', type=int, default=0)
@@ -811,6 +811,8 @@ if __name__ == '__main__':
             p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
+            if dis_iter % 100000 == 0:
+                args.noisescale = args.noisescale / 2.
             with Timer.new('load', print_=False):
                 epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
                 epoch, batch_id, _real_data2, _real_len2, _, _cs2, _cl2 = dataloader.next()
