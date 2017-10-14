@@ -61,6 +61,7 @@ def _pick_sample_from_word(key, maxlen, dataset, frame_size=None, skip_samples=F
     return sample_out, length
 
 def transform(x):
+    x[x==0] = x[x==0] + 1e-6
     return NP.log(x)
 
 def invtransform(x):

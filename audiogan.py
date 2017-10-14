@@ -863,7 +863,7 @@ if __name__ == '__main__':
 
             accs = [acc_d, acc_g]
             if batch_id % 1 == 0:
-                print 'D', epoch, batch_id, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
+                print 'D', epoch, dis_iter, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
                 print 'lengths'
                 print 'fake', list(fake_len.data)
                 print 'real', list(real_len.data)
@@ -1027,10 +1027,11 @@ if __name__ == '__main__':
                     add_heatmap_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_spectogram')
                 if gen_iter % 200 == 0:
                     for batch in range(batch_size):
-                        fake_spect = fake_data[batch, :,:fake_len[batch]]
-                        fake_sample = spect_to_audio(fake_spect)
-                        add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_waveform')
-                        add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter, 'fake_audio')
+                        if fake_len[batch] > 3:
+                            fake_spect = fake_data[batch, :,:fake_len[batch]]
+                            fake_sample = spect_to_audio(fake_spect)
+                            add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_waveform')
+                            add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter, 'fake_audio')
                     T.save(d, '%s-dis-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                     T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
                     T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
