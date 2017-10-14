@@ -437,6 +437,12 @@ class Discriminator(NN.Module):
                 NN.LeakyReLU(),
                 NN.Linear(state_size, embed_size),
                 ))
+        self.conv = NN.DataParallel(NN.Sequential(
+                NN.Conv1d(1025, 1025, kernel_size=3, stride=1, padding=1),
+                NN.Conv1d(1025, 1025, kernel_size=3, stride=1, padding=1),
+                NN.Conv1d(1025, 1025, kernel_size=3, stride=1, padding=1),
+                
+                ))
         init_weights(self.classifier)
         init_weights(self.encoder)
 
@@ -446,7 +452,12 @@ class Discriminator(NN.Module):
         num_layers = self._num_layers
         embed_size = self._embed_size
         batch_size, nfreq, maxlen = x.size()
-
+        
+        mask = length_mask((x.size()[0], x.size()[2]),lengths).unsqueeze(1)
+        x = x * mask
+        
+        x = self.conv(x)
+        
         xold = x
 
         initial_state = (
@@ -480,7 +491,7 @@ parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=2048, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
