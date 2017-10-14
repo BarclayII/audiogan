@@ -971,7 +971,8 @@ if __name__ == '__main__':
                         gen_iter
                         )
                 reward = (reward - baseline).unsqueeze(1) * weight_r.data
-    
+                average_reward = reward.mean()
+                reward = reward/average_reward
                 '''
                 fp_raw = tonumpy(feature_penalty)
                 if fp_raw  * lambda_fp > 100:
