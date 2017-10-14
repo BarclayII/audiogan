@@ -947,10 +947,10 @@ if __name__ == '__main__':
                 #loss_fp_len = T.abs(fake_len.float().mean() - real_len.float().mean())**1.5 + \
                 #            T.abs(fake_len.float().std() - real_len.float().std())**1.5
                             
-                loss_fp_data = loss_fp_data / 10
+                loss_fp_data = loss_fp_data / 50
                 #loss_fp_len = loss_fp_len / 10
                 
-                loss = _loss - rank_g/10
+                loss = _loss - rank_g/3
                 
                 #print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
                 #print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
@@ -972,7 +972,7 @@ if __name__ == '__main__':
                         )
                 reward = (reward - baseline).unsqueeze(1) * weight_r.data
                 average_reward = reward.abs().mean()
-                reward = reward/average_reward/100.
+                reward = reward/average_reward/50.
                 '''
                 fp_raw = tonumpy(feature_penalty)
                 if fp_raw  * lambda_fp > 100:
@@ -984,7 +984,7 @@ if __name__ == '__main__':
                 '''
     
                 _loss = _loss.mean()
-                _rank_g = -(rank_g/10).mean()
+                _rank_g = -(rank_g/3).mean()
                 for i, fake_stop in enumerate(fake_stop_list):
                     fake_stop.reinforce(args.lambda_pg * reward[:, i:i+1])
                     # this is where you put the reward-baseline crapand
