@@ -971,7 +971,7 @@ if __name__ == '__main__':
                         gen_iter
                         )
                 reward = (reward - baseline).unsqueeze(1) * weight_r.data
-                average_reward = reward.mean()
+                average_reward = reward.abs().mean()
                 reward = reward/average_reward
                 '''
                 fp_raw = tonumpy(feature_penalty)
