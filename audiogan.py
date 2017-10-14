@@ -395,7 +395,7 @@ class Generator(NN.Module):
             logp_t = T.cat([s1_t, s_t], 1)
             p_t = logp_t.exp()
             #how can i add to only one index without crashing it?
-            p_t = p_t + tovar(NP.array([.5, 0.02])).unsqueeze(0)
+            p_t = p_t + tovar(NP.array([1, 0.02])).unsqueeze(0)
             #p_t = p_t + 0.03
             stop_t = p_t.multinomial()
             length += generating
