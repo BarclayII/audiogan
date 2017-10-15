@@ -931,24 +931,24 @@ if __name__ == '__main__':
                 g_grad_norm = clip_grad(param_g, args.ggradclip)
                 
                 #Rank loss is smallest contributor because it is most unstable?
-                if rank_grad_norm < .3:
+                if rank_grad_norm < .5:
                     lambda_rank_g *= 1.1
-                if rank_grad_norm > .3:
+                if rank_grad_norm > .5:
                     lambda_rank_g /= 1.5
                     
-                if fp_grad_norm < 1:
+                if fp_grad_norm < 2:
                     lambda_fp_g *= 1.1
-                if fp_grad_norm > 1:
-                    lambda_fp_g /= 1.5
+                if fp_grad_norm > 2:
+                    lambda_fp_g /=1.5
                     
-                if pg_grad_norm < 1:
+                if pg_grad_norm < 2:
                     lambda_pg_g *= 1.1
-                if pg_grad_norm > 1:
+                if pg_grad_norm > 2:
                     lambda_pg_g /= 1.5
                     
-                if loss_grad_norm < 1:
+                if loss_grad_norm < 2:
                     lambda_loss_g *= 1.1
-                if loss_grad_norm > 1:
+                if loss_grad_norm > 2:
                     lambda_loss_g /= 1.5
                     
                 if lambda_rank_g > args.lambda_rank:
