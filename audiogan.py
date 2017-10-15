@@ -333,10 +333,7 @@ class Generator(NN.Module):
             lstm = NN.LSTMCell(state_size, state_size)
             init_lstm(lstm)
             self.rnn.append(NN.DataParallel(lstm))
-        '''
-        self.proj = NN.DataParallel(NN.Linear(state_size, frame_size))
-        self.stopper = NN.DataParallel(NN.Linear(state_size, 1))
-        '''
+        
         self.proj = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
                 Residual(state_size),
@@ -544,7 +541,8 @@ else:
 args.framesize = args.nfreq
 print modelnamesave
 print args
-
+reward_scatter = []
+length_scatter = []
 batch_size = args.batchsize
 
 dataset_h5, maxlen, dataloader, dataloader_val, keys_train, keys_val = \
@@ -615,6 +613,28 @@ def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
             )
     summary = TF.Summary.Value(tag='%s/%s' % (tag, word), image=summary)
     writer.add_summary(TF.Summary(value=[summary]), gen_iter)
+
+def add_scatterplot(writer, reward_scatter, length_scatter, gen_iter, tag = 'scatterplot'):
+    reward_scatter = NP.stack(reward_scatter)
+    s = reward_scatter.std()
+    reward_scatter = reward_scatter + \
+        NP.random.rand(reward_scatter.shape[0], reward_scatter.shape[1]) * s / 100.
+    PL.scatter(length_scatter, reward_scatter)
+    PL.savefig(png_file)
+    PL.close()
+    with open(png_file, 'rb') as f:
+        imgbuf = f.read()
+    img = Image.open(png_file)
+    summary = TF.Summary.Image(
+            height=img.height,
+            width=img.width,
+            colorspace=3,
+            encoded_image_string=imgbuf
+            )
+    summary = TF.Summary.Value(tag='%s' % (tag), image=summary)
+    writer.add_summary(TF.Summary(value=[summary]), gen_iter)
+
+
 
 def add_heatmap_summary(writer, word, sample, gen_iter, tag='plot'):
     sample = dataset.invtransform(sample)
@@ -701,105 +721,6 @@ if __name__ == '__main__':
         p.requires_grad = True
     opt_g = T.optim.RMSprop(param_g, lr=args.glr)
     opt_d = T.optim.RMSprop(param_d, lr=args.dlr,weight_decay=1e-4)
-
-
-#    if not args.pretrain_d and not modelnameload:
-#        print 'Pretraining D'
-#        for p in param_g:
-#            p.requires_grad = False
-#        for p in param_d:
-#            p.requires_grad = True
-#        for j in range(args.critic_iter):
-#            with Timer.new('load', print_=False):
-#                epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
-#                _, _, _wrong_data, _wrong_len, _, _, _ = dataloader.next()
-#                ck2, _cs2, _cl2, _, _ = dataset.pick_words(
-#                        batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
-#
-#            dis_iter += 1
-#
-#            with Timer.new('train_d', print_=False):
-#                real_data = tovar(_real_data)
-#                real_len = tovar(_real_len).long()
-#                wrong_data = tovar(_wrong_data)
-#                wrong_len = tovar(_wrong_len).long()
-#                cs = tovar(_cs).long()
-#                cl = tovar(_cl).long()
-#                embed_d = e_d(cs, cl)
-#                cs2 = tovar(_cs2).long()
-#                cl2 = tovar(_cl2).long()
-#                embed_d2 = e_d(cs2, cl2)
-#
-#                _, cls_d, _, _, _, _, _, loss_d, _, _, acc_d = discriminate(d, real_data, real_len, embed_d, 1, 1, True, True)
-#                _, cls_d_wrong, _, _, _, _, _, loss_d_wrong, _, _, acc_d_wrong = discriminate(d, wrong_data, wrong_len, embed_d2, 0, 0, False, False)
-#
-#                loss = loss_d + loss_d_wrong
-#                opt_d.zero_grad()
-#                loss.backward()
-#                check_grad(param_d)
-#                e_d_grad_norm = sum(T.norm(p.grad.data) ** 2 for p in e_d.parameters() if p.grad is not None) ** 0.5
-#                d_grad_norm = clip_grad(param_d, args.dgradclip)
-#                opt_d.step()
-#
-#            loss_d, loss, cls_d, cls_d_wrong = tonumpy(loss_d, loss, cls_d, cls_d_wrong)
-#
-#            d_train_writer.add_summary(
-#                    TF.Summary(
-#                        value=[
-#                            TF.Summary.Value(tag='loss_d', simple_value=loss_d),
-#                            TF.Summary.Value(tag='loss', simple_value=loss),
-#                            TF.Summary.Value(tag='cls_d/mean', simple_value=cls_d.mean()),
-#                            TF.Summary.Value(tag='cls_d/std', simple_value=cls_d.std()),
-#                            TF.Summary.Value(tag='cls_d_wrong/mean', simple_value=cls_d_wrong.mean()),
-#                            TF.Summary.Value(tag='cls_d_wrong/std', simple_value=cls_d_wrong.std()),
-#                            TF.Summary.Value(tag='acc_d', simple_value=acc_d),
-#                            TF.Summary.Value(tag='acc_d_wrong', simple_value=acc_d_wrong),
-#                            TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
-#                            ]
-#                        ),
-#                    dis_iter
-#                    )
-#
-#            # Validation
-#            epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
-#            _, _, _wrong_data, _wrong_len, _, _, _ = dataloader.next()
-#            ck2, _cs2, _cl2, _, _ = dataset.pick_words(
-#                    batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
-#            real_data = tovar(_real_data)
-#            real_len = tovar(_real_len).long()
-#            wrong_data = tovar(_wrong_data)
-#            wrong_len = tovar(_wrong_len).long()
-#            cs = tovar(_cs).long()
-#            cl = tovar(_cl).long()
-#            embed_d = e_d(cs, cl)
-#            cs2 = tovar(_cs2).long()
-#            cl2 = tovar(_cl2).long()
-#            embed_d2 = e_d(cs2, cl2)
-#
-#            _, cls_d, _, _, _, _, _, loss_d_val, _, _, acc_d_val = discriminate(d, real_data, real_len, embed_d, 1, 1, True, True)
-#            _, cls_d_wrong, _, _, _, _, _, loss_d_wrong_val, _, _, acc_d_wrong_val = discriminate(d, wrong_data, wrong_len, embed_d2, 0, 0, False, False)
-#            loss_val = tonumpy(loss_d_val + loss_d_wrong_val)[0]
-#
-#            d_train_writer.add_summary(
-#                    TF.Summary(
-#                        value=[
-#                            TF.Summary.Value(tag='loss_val', simple_value=loss_val),
-#                            TF.Summary.Value(tag='acc_d_val', simple_value=acc_d_val),
-#                            TF.Summary.Value(tag='acc_d_wrong_val', simple_value=acc_d_wrong_val),
-#                            ]
-#                        ),
-#                    dis_iter
-#                    )
-#
-#            print 'D', epoch, batch_id, loss, loss_val, 'Train Acc:', acc_d, acc_d_wrong, 'Val Acc:', acc_d_val, acc_d_wrong_val, 'Grad Norms:', e_d_grad_norm, d_grad_norm, 'Time:', Timer.get('load'), Timer.get('train_d')
-#            if dis_iter % 10000 == 0:
-#                T.save(d, '%s-dis-pretrain-%05d' % (modelnamesave, dis_iter))
-#                T.save(e_d, '%s-ed-pretrain-%05d' % (modelnamesave, dis_iter))
-#    else:
-#        if not modelnameload:
-#            d_pretrain = T.load('%s-dis-pretrain-%05d' % (modelnamesave, args.pretrain_d))
-#            e_d = T.load('%s-ed-pretrain-%05d' % (modelnamesave, args.pretrain_d))
-#            d.state_dict().update({k: v for k, v in d_pretrain.state_dict().items() if not k.startswith('cnn')})
     grad_nan = 0
     g_grad_nan = 0
     while True:
@@ -920,15 +841,6 @@ if __name__ == '__main__':
                 
                 cls_g, rank_g, nframes_g = d(fake_data, fake_len, embed_d)
                 
-                #dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
-                #dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
-                #feature_penalty = 0
-                #dists are (object, std) pairs.
-                #penalizing z-scores of gen from real distribution
-                #Note that the model could not do anything to r[1] by optimizing G.
-                #for r, f in zip(dists_d, dists_g):
-                #    feature_penalty += T.pow((r[0] - f[0]), 2).mean() / batch_size
-    
                 if args.g_optim == 'boundary_seeking':
                     target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
                 else:
@@ -944,17 +856,11 @@ if __name__ == '__main__':
                     loss_fp_data += (T.abs(moment_by_index(fake_data.float(),exp, fake_len) - 
                                       moment_by_index(real_data.float(),exp,real_len))**1.5).mean()
                             
-                #loss_fp_len = T.abs(fake_len.float().mean() - real_len.float().mean())**1.5 + \
-                #            T.abs(fake_len.float().std() - real_len.float().std())**1.5
-                            
+                     
                 loss_fp_data = loss_fp_data / 200
-                #loss_fp_len = loss_fp_len / 10
                 
                 loss = _loss - rank_g/5
                 
-                #print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
-                #print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
-    
                 reward = -loss.data# - loss_fp_len.data
                 baseline = reward.mean() if baseline is None else baseline * 0.5 + reward.mean() * 0.5
                 
@@ -971,22 +877,14 @@ if __name__ == '__main__':
                 reward = (reward - baseline).unsqueeze(1) * weight_r.data
                 average_reward = reward.abs().mean()
                 reward = reward/average_reward/50.
-                '''
-                fp_raw = tonumpy(feature_penalty)
-                if fp_raw  * lambda_fp > 100:
-                    lambda_fp *= .2
-                if fp_raw  * lambda_fp > 10:
-                    lambda_fp *= .9
-                if fp_raw  * lambda_fp < 1:
-                    lambda_fp *= 1.1
-                '''
-    
+                
+                reward_scatter.append(reward[:,0].cpu().numpy())
+                length_scatter.append(fake_len.cpu().data.numpy())
+                
                 _loss = _loss.mean()
                 _rank_g = -(rank_g/3).mean()
                 for i, fake_stop in enumerate(fake_stop_list):
                     fake_stop.reinforce(args.lambda_pg * reward[:, i:i+1])
-                    # this is where you put the reward-baseline crapand
-                    # like if the reward - baseline is big, then it is good..... so you... backpropogate to say 
                 # Debug the gradient norms
                 opt_g.zero_grad()
                 _loss.backward(retain_graph=True)
@@ -1000,12 +898,7 @@ if __name__ == '__main__':
                 loss_fp_data.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
                 fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
-                '''
-                for p in param_g:
-                    p.requires_grad = False
-                for p in g.stopper.parameters():
-                    p.requires_grad = True
-                '''
+                
                 opt_g.zero_grad()
                 T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
                 pg_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
@@ -1040,8 +933,11 @@ if __name__ == '__main__':
                         gen_iter
                         )
                 opt_g.step()
-    
+            
             if gen_iter % 20 == 0:
+                add_scatterplot(d_train_writer,reward_scatter, length_scatter, gen_iter, 'scatterplot')
+                reward_scatter = []
+                length_scatter = []
                 embed_g = e_g(cseq_fixed, clen_fixed)
                 fake_data, _, _, fake_len, fake_p = g(z=z_fixed, c=embed_g)
                 fake_data, fake_len = tonumpy(fake_data, fake_len)
