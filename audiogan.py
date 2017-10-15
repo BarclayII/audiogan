@@ -664,7 +664,7 @@ def add_heatmap_summary(writer, word, sample, gen_iter, tag='plot'):
 def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
     sample_max = sample.max()
     sample_min = sample.min()
-    rng = sample_max - sample_min
+    rng = NP.max((sample_max - sample_min,1e-5))
     sample = ((sample - sample_min) * 2. / rng) - 1
     librosa.output.write_wav(wav_file, sample, sr=8000)
     with open(wav_file, 'rb') as f:
