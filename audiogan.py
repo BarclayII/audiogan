@@ -859,7 +859,7 @@ if __name__ == '__main__':
                 nframes_max = fake_len.data.max()
                 weight_r = length_mask((batch_size, nframes_max), fake_len)
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-                _loss *= lambda_gen
+                _loss *= lambda_loss_g
                 loss_fp_data = 0
                 for exp in [1,2,4,6]:
                     loss_fp_data += T.abs(moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **1.5
