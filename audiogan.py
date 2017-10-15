@@ -947,19 +947,17 @@ if __name__ == '__main__':
                 #loss_fp_len = T.abs(fake_len.float().mean() - real_len.float().mean())**1.5 + \
                 #            T.abs(fake_len.float().std() - real_len.float().std())**1.5
                             
-                loss_fp_data = loss_fp_data / 50
+                loss_fp_data = loss_fp_data / 200
                 #loss_fp_len = loss_fp_len / 10
                 
-                loss = _loss - rank_g/3
+                loss = _loss - rank_g/5
                 
                 #print 'fake', tonumpy(fake_len).mean(), tonumpy(fake_len).std(), tonumpy(fake_data).mean(), tonumpy(fake_data).std()
                 #print 'real', tonumpy(real_len).mean(), tonumpy(real_len).std(), tonumpy(real_data).mean(), tonumpy(real_data).std()
     
                 reward = -loss.data# - loss_fp_len.data
-                if gen_iter + args.loaditerations < 1000:
-                    baseline = reward.mean() if baseline is None else baseline * 0.5 + reward.mean() * 0.5
-                else:
-                    baseline = baseline * 0.7 + reward.mean() * 0.3
+                baseline = reward.mean() if baseline is None else baseline * 0.5 + reward.mean() * 0.5
+                
                 d_train_writer.add_summary(
                         TF.Summary(
                             value=[
