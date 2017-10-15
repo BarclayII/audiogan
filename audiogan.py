@@ -142,7 +142,7 @@ def length_mask(size, length):
     return weight
 
 
-def dynamic_rnn(rnn, seq, length, initial_state):
+def dynamic_rnn(rnn, seq, length, length_max, initial_state):
     length_sorted, length_sorted_idx = T.sort(length, descending=True)
     _, length_inverse_idx = T.sort(length_sorted_idx)
     rnn_in = pack_padded_sequence(
@@ -152,12 +152,14 @@ def dynamic_rnn(rnn, seq, length, initial_state):
     rnn_out, rnn_last_state = rnn(rnn_in, initial_state)
     rnn_out = pad_packed_sequence(rnn_out)[0]
     out = advanced_index(rnn_out, 1, length_inverse_idx)
+    out_new = tovar(T.zeros(length_max, seq.size()[1], out.size()[2]))
+    out_new[:out.size()[0]] = out
     if isinstance(rnn_last_state, tuple):
         state = tuple(advanced_index(s, 1, length_inverse_idx) for s in rnn_last_state)
     else:
         state = advanced_index(s, 1, length_inverse_idx)
 
-    return out, state
+    return out_new, state
 
 
 def check_grad(params):
@@ -200,6 +202,18 @@ def init_weights(module):
         elif name.find('bias') != -1:
             INIT.constant(param.data, 0)
 
+def stable_reg(cls, weight, input_, fake):
+    reg = 0
+    sigm_cls = F.sigmoid(cls)
+    for t in range(weight.size()[1]):
+        grad = T.autograd.grad(cls[:, t], input_, grad_outputs=weight[:, t], create_graph=True, retain_graph=True, only_inputs=True)[0]
+        reg = reg + ((1 - sigm_cls[:, t]) if not fake else sigm_cls[:, t]) ** 2 * grad.norm(2, 1) ** 2
+    reg = reg / weight.data.sum()
+
+    return reg
+
+def data_parallel(m):
+    return m
 
 class Residual(NN.Module):
     def __init__(self,size):
@@ -224,16 +238,17 @@ class Embedder(NN.Module):
         self._char_embed_size = char_embed_size
         self._num_layers = num_layers
 
-        self.embed = NN.DataParallel(NN.Embedding(num_chars, char_embed_size))
+        self.embed = data_parallel(NN.Embedding(num_chars, char_embed_size))
         self.rnn = NN.LSTM(
                 char_embed_size,
                 output_size // 2,
                 num_layers,
                 bidirectional=True,
+                fused=False
                 )
         init_lstm(self.rnn)
 
-    def forward(self, chars, length):
+    def forward(self, chars, length, length_max):
         num_layers = self._num_layers
         batch_size = chars.size()[0]
         output_size = self._output_size
@@ -243,7 +258,7 @@ class Embedder(NN.Module):
                 tovar(T.zeros(num_layers * 2, batch_size, output_size // 2)),
                 tovar(T.zeros(num_layers * 2, batch_size, output_size // 2)),
                 )
-        embed, (h, c) = dynamic_rnn(self.rnn, embed_seq, length, initial_state)
+        embed, (h, c) = dynamic_rnn(self.rnn, embed_seq, length, length_max, initial_state)
         h = h.permute(1, 0, 2)
         return h[:, -2:].contiguous().view(batch_size, output_size)
 
@@ -287,13 +302,13 @@ class Generator(NN.Module):
         self.rnn = NN.ModuleList()
         lstm = NN.LSTMCell(frame_size + embed_size + noise_size, state_size)
         init_lstm(lstm)
-        self.rnn.append(NN.DataParallel(lstm))
+        self.rnn.append(data_parallel(lstm))
         for _ in range(1, num_layers):
             lstm = NN.LSTMCell(state_size, state_size)
             init_lstm(lstm)
-            self.rnn.append(NN.DataParallel(lstm))
-        self.proj = NN.DataParallel(NN.Linear(state_size, frame_size))
-        self.stopper = NN.DataParallel(NN.Linear(state_size, 1))
+            self.rnn.append(data_parallel(lstm))
+        self.proj = data_parallel(NN.Linear(state_size, frame_size))
+        self.stopper = data_parallel(NN.Linear(state_size, 1))
         init_weights(self.proj)
         init_weights(self.stopper)
 
@@ -386,7 +401,7 @@ class Discriminator(NN.Module):
             kernel, stride, outfilters = layer[0],layer[1],layer[2]
 
             conv = NN.Conv1d(infilters, outfilters, kernel, stride=stride, padding=(kernel - 1) // 2)
-            self.cnn.append(NN.DataParallel(conv))
+            self.cnn.append(data_parallel(conv))
 
             infilters = outfilters
         init_weights(self.cnn)
@@ -398,20 +413,21 @@ class Discriminator(NN.Module):
                 state_size // 2,
                 num_layers,
                 bidirectional=True,
+                fused=False,
                 )
         init_lstm(self.rnn)
-        self.residual_net = NN.DataParallel(NN.Sequential(
+        self.residual_net = data_parallel(NN.Sequential(
                 Residual(state_size),
                 Residual(state_size),
                 Residual(state_size),
                 Residual(state_size)
             ))
-        self.classifier = NN.DataParallel(NN.Sequential(
+        self.classifier = data_parallel(NN.Sequential(
                 NN.Linear(state_size, state_size // 2),
                 NN.LeakyReLU(),
                 NN.Linear(state_size // 2, 1),
                 ))
-        self.encoder = NN.DataParallel(NN.Sequential(
+        self.encoder = data_parallel(NN.Sequential(
                 NN.Linear(state_size, state_size),
                 NN.LeakyReLU(),
                 NN.Linear(state_size, embed_size),
@@ -420,12 +436,16 @@ class Discriminator(NN.Module):
         init_weights(self.classifier)
         init_weights(self.encoder)
 
-    def forward(self, x, length, c, percent_used = 0.1):
+    def forward(self, x, length, length_max, c, fake=False, compute_reg=True):
         frame_size = self._frame_size
         state_size = self._state_size
         num_layers = self._num_layers
         embed_size = self._embed_size
         batch_size, maxlen = x.size()
+
+        if compute_reg:
+            x = tovar(x.data)
+            x.requires_grad = True
 
         xold = x
 
@@ -437,25 +457,25 @@ class Discriminator(NN.Module):
         cnn_output_lengths = []
         cnn_output = xold.unsqueeze(1)
         nframes = length
+        nframes_max = length_max
         cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
         for cnn_layer, (_, stride, _) in zip(self.cnn, self.cnn_struct):
             cnn_output = F.leaky_relu(cnn_layer(cnn_output))
             nframes = (nframes + stride - 1) / stride
+            nframes_max = (nframes_max + stride - 1) / stride
             cnn_output = cnn_output * length_mask((batch_size, cnn_output.size()[2]), nframes).unsqueeze(1)
             cnn_outputs.append(cnn_output)
             cnn_output_lengths.append(nframes)
         x = cnn_output
         x = x.permute(0, 2, 1)
         #x = x.view(32, nframes_max, frame_size)
-        max_nframes = x.size()[1]
         x2 = x.permute(1,0,2)
-        lstm_out, (h, _) = dynamic_rnn(self.rnn, x2, nframes, initial_state)
+        lstm_out, (h, _) = dynamic_rnn(self.rnn, x2, nframes, nframes_max, initial_state)
         lstm_out = lstm_out.permute(1, 0, 2)
-        max_nframes = lstm_out.size()[1]
 
-        conv_out = lstm_out.view(batch_size * max_nframes, state_size)
+        conv_out = lstm_out.contiguous().view(batch_size * nframes_max, state_size)
         res_out = self.residual_net(conv_out)
-        classifier_out = self.classifier(res_out).view(batch_size, max_nframes)
+        classifier_out = self.classifier(res_out).view(batch_size, nframes_max)
 
         h = h.permute(1, 0, 2)
         h = h[:, -2:].contiguous().view(batch_size, state_size)
@@ -465,7 +485,13 @@ class Discriminator(NN.Module):
         c_unitnorm = c / (c.norm(2, 1, keepdim=True) + 1e-4)
         ranking = T.bmm(code_unitnorm.unsqueeze(1), c_unitnorm.unsqueeze(2)).squeeze()
 
-        return classifier_out, ranking, cnn_outputs, cnn_output_lengths, nframes
+        if compute_reg:
+            weight = length_mask(classifier_out.size(), nframes)
+            reg = stable_reg(classifier_out, weight, xold, fake)
+
+            return classifier_out, ranking, cnn_outputs, cnn_output_lengths, nframes, reg
+        else:
+            return classifier_out, ranking, cnn_outputs, cnn_output_lengths, nframes
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=100, type=int)
@@ -495,6 +521,7 @@ parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.5)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
 parser.add_argument('--lambda_rank', type=float, default=10)
+parser.add_argument('--lambda_reg', type=float, default=0.0001)
 parser.add_argument('--pretrain_d', type=int, default=0)
 
 args = parser.parse_args()
@@ -536,24 +563,24 @@ png_file = '%s/temp.png' % log_train_d
 wav_file = '%s/temp.wav' % log_train_d
 
 
-g = Generator(
+g = (Generator(
         frame_size=args.framesize,
         noise_size=args.noisesize,
         state_size=args.gstatesize,
         embed_size=args.embedsize,
         num_layers=args.rnng_layers,
-        ).cuda()
+        )).cuda()
 nframes = div_roundup(maxlen, args.framesize)
 z_fixed = tovar(RNG.randn(batch_size, nframes, args.noisesize))
 
-e_g = Embedder(args.embedsize).cuda()
-e_d = Embedder(args.embedsize).cuda()
+e_g = NN.DataParallel(Embedder(args.embedsize)).cuda()
+e_d = NN.DataParallel(Embedder(args.embedsize)).cuda()
 
-d = Discriminator(
+d = NN.DataParallel(Discriminator(
         state_size=args.dstatesize,
         embed_size=args.embedsize,
         num_layers=args.rnnd_layers,
-        ).cuda()
+        )).cuda()
 
 def add_waveform_summary(writer, word, sample, gen_iter, tag='plot'):
     PL.plot(sample)
@@ -612,8 +639,13 @@ param_d = list(d.parameters()) + list(e_d.parameters())
 opt_g = T.optim.RMSprop(param_g, lr=args.glr)
 opt_d = T.optim.RMSprop(param_d, lr=args.dlr)
 
-def discriminate(d, data, length, embed, target, real):
-    cls, rank, _, _, nframes = d(data, length, embed)
+def discriminate(d, data, length, embed, target, real, compute_reg=True):
+    result = d(data, length, length.data.max(), embed, fake=not real, compute_reg=compute_reg)
+    if compute_reg:
+        cls, rank, _, _, nframes, reg = result
+    else:
+        cls, rank, _, _, nframes = result
+        reg = 0
     target = tovar(T.ones(*(cls.size())) * target)
     weight = length_mask(cls.size(), nframes)
     loss_c = binary_cross_entropy_with_logits_per_sample(cls, target, weight=weight) / nframes.float()
@@ -622,7 +654,7 @@ def discriminate(d, data, length, embed, target, real):
     correct = correct.sum()
     num = weight.data.sum()
     acc = correct / num
-    return cls, nframes, target, weight, loss_c, rank, acc
+    return cls, nframes, target, weight, loss_c, rank, acc, reg
 
 if __name__ == '__main__':
     if modelnameload:
@@ -745,38 +777,51 @@ if __name__ == '__main__':
                 epoch, batch_id, _real_data2, _real_len2, _, _cs2, _cl2 = dataloader.next()
 
             with Timer.new('train_d', print_=False):
-                noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data = tovar(_real_data) + noise
+                #noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
+                #real_data = tovar(_real_data) + noise
+                real_data = tovar(_real_data)
                 real_len = tovar(_real_len).long()
-                noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data2 = tovar(_real_data2) + noise
+                #noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
+                #real_data2 = tovar(_real_data2) + noise
+                real_data2 = tovar(_real_data2)
                 real_len2 = tovar(_real_len2).long()
                 cs = tovar(_cs).long()
                 cl = tovar(_cl).long()
                 cs2 = tovar(_cs2).long()
                 cl2 = tovar(_cl2).long()
 
-                embed_d = e_d(cs, cl)
-                embed_g2 = e_g(cs2, cl2)
-                embed_d2 = e_d(cs2, cl2)
+                embed_d = e_d(cs, cl, cl.data.max())
+                embed_g2 = e_g(cs2, cl2, cl2.data.max())
+                embed_d2 = e_d(cs2, cl2, cl2.data.max())
 
-                cls_d, _, _, _, loss_d, rank_d, acc_d = \
-                        discriminate(d, real_data, real_len, embed_d, 0.9, True)
-                cls_d_x, _, _, _, _, rank_d_x, acc_d_x = \
-                        discriminate(d, real_data, real_len, embed_d2, 0.9, True)
-                cls_d_x2, _, _, _, _, rank_d_x2, acc_d_x2 = \
-                        discriminate(d, real_data2, real_len2, embed_d, 0.9, True)
+                cls_d, _, _, weight_d, loss_d, rank_d, acc_d, reg_d = \
+                        discriminate(d, real_data, real_len, embed_d, 0.9, True, compute_reg=True)
+                cls_d_x, _, _, _, _, rank_d_x, acc_d_x, _ = \
+                        discriminate(d, real_data, real_len, embed_d2, 0.9, True, compute_reg=False)
+                cls_d_x2, _, _, _, _, rank_d_x2, acc_d_x2, _ = \
+                        discriminate(d, real_data2, real_len2, embed_d, 0.9, True, compute_reg=False)
 
                 fake_data, _, _, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g2)
-                noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-                fake_data = tovar((fake_data + noise).data)
-                cls_g, _, _, _, loss_g, rank_g, acc_g = \
-                        discriminate(d, fake_data, fake_len, embed_d2, 0, False)
+                #noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
+                #fake_data = tovar((fake_data + noise).data)
+                fake_data = tovar(fake_data.data)
+                cls_g, _, _, weight_g, loss_g, rank_g, acc_g, reg_g = \
+                        discriminate(d, fake_data, fake_len, embed_d2, 0, False, compute_reg=True)
 
                 loss_rank = ((1 - rank_d + rank_d_x).clamp(min=0) + (1 - rank_d + rank_d_x2).clamp(min=0)).mean()
-                loss = loss_d + loss_g + loss_rank
+                loss = (loss_d + loss_g + args.lambda_reg * (reg_d + reg_g)).mean()
                 opt_d.zero_grad()
-                loss.backward()
+                loss.backward(retain_graph=True)
+                loss_grad_dict = {p: p.grad.data.clone() for p in param_d if p.grad is not None}
+                loss_grad_norm = sum(T.norm(p.grad.data) for p in param_d if p.grad is not None)
+                opt_d.zero_grad()
+                loss_rank.backward(T.Tensor([args.lambda_rank]).cuda())
+                rank_grad_dict = {p: p.grad.data.clone() for p in param_d if p.grad is not None}
+                rank_grad_norm = sum(T.norm(p.grad.data) for p in param_d if p.grad is not None)
+                for p in param_d:
+                    if p.grad is not None:
+                        if p in loss_grad_dict:
+                            p.grad.data += loss_grad_dict[p]
                 if not check_grad(param_d):
                     grad_nan += 1
                     print 'Gradient exploded %d times', grad_nan
@@ -807,7 +852,8 @@ if __name__ == '__main__':
                             TF.Summary.Value(tag='rank_d_x2/std', simple_value=rank_d_x2.std()),
                             TF.Summary.Value(tag='acc_d', simple_value=acc_d),
                             TF.Summary.Value(tag='acc_g', simple_value=acc_g),
-                            TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
+                            TF.Summary.Value(tag='d_loss_grad_norm', simple_value=loss_grad_norm),
+                            TF.Summary.Value(tag='d_rank_grad_norm', simple_value=rank_grad_norm),
                             ]
                         ),
                     dis_iter
@@ -830,13 +876,13 @@ if __name__ == '__main__':
         with Timer.new('train_g', print_=False):
             cs = tovar(cs).long()
             cl = tovar(cl).long()
-            embed_g = e_g(cs, cl)
-            embed_d = e_d(cs, cl)
+            embed_g = e_g(cs, cl, cl.data.max())
+            embed_d = e_d(cs, cl, cl.data.max())
             fake_data, fake_s, fake_stop_list, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g)
-            noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
+            noise = 0#tovar(T.randn(*fake_data.size()) * args.noisescale)
             fake_data += noise
             
-            cls_g, rank_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, embed_d)
+            cls_g, rank_g, hidden_states_g, hidden_states_length_g, nframes_g = d(fake_data, fake_len, fake_len.data.max(), embed_d, compute_reg=False)
             
             #dists_d = calc_dists(hidden_states_d, hidden_states_length_d)
             #dists_g = calc_dists(hidden_states_g, hidden_states_length_g)
@@ -932,7 +978,7 @@ if __name__ == '__main__':
             opt_g.step()
 
         if gen_iter % 20 == 0:
-            embed_g = e_g(cseq_fixed, clen_fixed)
+            embed_g = e_g(cseq_fixed, clen_fixed, clen_fixed.data.max())
             fake_data, _, _, fake_len, fake_p = g(z=z_fixed, c=embed_g)
             fake_data, fake_len = tonumpy(fake_data, fake_len)
 
