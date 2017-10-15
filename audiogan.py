@@ -658,8 +658,8 @@ def add_heatmap_summary(writer, word, sample, gen_iter, tag='plot'):
 def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
     sample_max = sample.max()
     sample_min = sample.min()
-    sample = ((sample - sample_min) / 
-              (sample_max - sample_min) * 2.) - 1
+    rng = sample_max - sample_min
+    sample = ((sample - sample_min) * 2. / rng) - 1
     librosa.output.write_wav(wav_file, sample, sr=8000)
     with open(wav_file, 'rb') as f:
         wavbuf = f.read()
@@ -736,8 +736,8 @@ if __name__ == '__main__':
             p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
-            if dis_iter % 100000 == 0:
-                args.noisescale = args.noisescale / 2.
+            if dis_iter % 5000 == 0:
+                args.noisescale = args.noisescale * .9
             with Timer.new('load', print_=False):
                 epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
                 epoch, batch_id, _real_data2, _real_len2, _, _cs2, _cl2 = dataloader.next()
