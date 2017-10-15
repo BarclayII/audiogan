@@ -517,27 +517,33 @@ parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=0.5)
+parser.add_argument('--noisescale', type=float, default=0.4)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.7)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
 parser.add_argument('--lambda_rank', type=float, default=1)
+parser.add_argument('--lambda_loss', type=float, default=.3)
+parser.add_argument('--lambda_fp', type=float, default=5e-3)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
+
 
 args = parser.parse_args()
 args.conditional = True
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
-lambda_fp = 1
 if len(args.modelname) > 0:
     modelnamesave = args.modelname
     modelnameload = None
 else:
     modelnamesave = args.modelnamesave
     modelnameload = args.modelnameload
+lambda_fp_g = args.lambda_fp
+lambda_pg_g = args.lambda_pg
+lambda_rank_g = args.lambda_rank
+lambda_loss_g = args.lambda_loss
 args.framesize = args.nfreq
 print modelnamesave
 print args
@@ -853,7 +859,7 @@ if __name__ == '__main__':
                 nframes_max = fake_len.data.max()
                 weight_r = length_mask((batch_size, nframes_max), fake_len)
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
-                _loss /= 3
+                _loss *= lambda_gen
                 loss_fp_data = 0
                 for exp in [1,2,4,6]:
                     loss_fp_data += T.abs(moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **1.5
@@ -861,7 +867,6 @@ if __name__ == '__main__':
                                       moment_by_index(real_data.float(),exp,real_len))**1.5).mean()
                             
                      
-                loss_fp_data = loss_fp_data / 200
                 
                 loss = _loss - rank_g/5
                 
@@ -886,20 +891,20 @@ if __name__ == '__main__':
                 length_scatter.append(fake_len.cpu().data.numpy())
                 
                 _loss = _loss.mean()
-                _rank_g = -(rank_g/3).mean()
+                _rank_g = -(rank_g/5).mean()
                 for i, fake_stop in enumerate(fake_stop_list):
-                    fake_stop.reinforce(args.lambda_pg * reward[:, i:i+1])
+                    fake_stop.reinforce(lambda_pg_g * reward[:, i:i+1])
                 # Debug the gradient norms
                 opt_g.zero_grad()
                 _loss.backward(retain_graph=True)
                 loss_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 loss_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 opt_g.zero_grad()
-                _rank_g.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
+                _rank_g.backward(T.Tensor([lambda_rank_g]).cuda(), retain_graph=True)
                 rank_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 rank_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 opt_g.zero_grad()
-                loss_fp_data.backward(T.Tensor([args.lambda_rank]).cuda(), retain_graph=True)
+                loss_fp_data.backward(T.Tensor([lambda_fp_g]).cuda(), retain_graph=True)
                 fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 
@@ -924,6 +929,37 @@ if __name__ == '__main__':
                     continue
                 grad_nan = 0
                 g_grad_norm = clip_grad(param_g, args.ggradclip)
+                
+                #Rank loss is smallest contributor because it is most unstable?
+                if rank_grad_norm < .3:
+                    lambda_rank_g *= 1.1
+                if rank_grad_norm > .3:
+                    lambda_rank_g /= 1.5
+                    
+                if fp_grad_norm < 1:
+                    lambda_fp_g *= 1.1
+                if fp_grad_norm > 1:
+                    lambda_fp_g /= 1.5
+                    
+                if pg_grad_norm < 1:
+                    lambda_pg_g *= 1.1
+                if pg_grad_norm > 1:
+                    lambda_pg_g /= 1.5
+                    
+                if loss_grad_norm < 1:
+                    lambda_loss_g *= 1.1
+                if loss_grad_norm > 1:
+                    lambda_loss_g /= 1.5
+                    
+                if lambda_rank_g > args.lambda_rank:
+                    lambda_rank_g = args.lambda_rank
+                if lambda_fp_g > args.lambda_fp:
+                    lambda_fp_g = args.lambda_fp
+                if lambda_pg_g > args.lambda_pg:
+                    lambda_pg_g = args.lambda_pg
+                if lambda_loss_g > args.lambda_loss:
+                    lambda_loss_g = args.lambda_loss
+                    
                 d_train_writer.add_summary(
                         TF.Summary(
                             value=[
