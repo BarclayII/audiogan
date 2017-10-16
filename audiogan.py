@@ -240,6 +240,17 @@ class Residual(NN.Module):
             return self.relu(self.linear(x) + x)
         else:
             return self.linear(x) + x
+class Highway(NN.Module):
+    def __init__(self, size):
+        NN.Module.__init__(self)
+        self.gater = NN.Linear(size, size)
+        self.gater.bias.data.fill_(-1)
+        self.transformer = NN.Linear(size, size)
+
+    def forward(self, x):
+        g = F.sigmoid(self.gater(x))
+        return g * F.leaky_relu(self.transformer(x)) + (1 - g) * x
+
 
 class ResidualConv(NN.Module):
     def __init__(self,size, kernel_size, relu = True):
@@ -497,6 +508,9 @@ class Discriminator(NN.Module):
                 NN.Conv1d(800,1025,kernel_size=3,stride=1,padding=1),
                 ConvMask(),
                 ))
+        self.highway = NN.DataParallel(NN.Sequential(*[Highway(1025) for _ in range(4)]))
+        init_weights(self.highway)
+        init_weights(self.conv)
         init_weights(self.classifier)
         init_weights(self.encoder)
 
@@ -508,10 +522,12 @@ class Discriminator(NN.Module):
         embed_size = self._embed_size
         batch_size, nfreq, maxlen = x.size()
         
-        
+        max_nframes = x.size()[2]
         convlengths = lengths
         x = self.conv(x)
-        
+        x = x.permute(0,2,1)
+        x = self.highway(x.contiguous().view(batch_size * max_nframes, -1)).view(batch_size, max_nframes, -1)
+
         xold = x
 
         initial_state = (
@@ -519,7 +535,6 @@ class Discriminator(NN.Module):
                 tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
                 )
         nframes = length
-        x = x.permute(0, 2, 1)
         #x = x.view(32, nframes_max, frame_size)
         max_nframes = x.size()[1]
         x2 = x.permute(1,0,2)
