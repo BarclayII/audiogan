@@ -398,7 +398,8 @@ class Generator(NN.Module):
                 NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1),
                 NN.LeakyReLU(),
                 ResidualConv(1025,3),
-                ResidualConv(1025,3,relu=False)
+                ResidualConv(1025,3),
+                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1)
                 ))
         
         init_weights(self.proj)
