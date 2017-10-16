@@ -394,14 +394,12 @@ class Generator(NN.Module):
                 NN.Linear(state_size, 1),
                 ))
         
-        self.conv = NN.DataParallel(NN.Sequential(
-                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1),
+        self.conv1 = NN.DataParallel(NN.Sequential(
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
                 NN.LeakyReLU(),
-                ResidualConv(1025,3),
-                ResidualConv(1025,3),
-                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1)
+                NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
                 ))
-        
+        init_weights(self.conv1)
         init_weights(self.proj)
         init_weights(self.stopper)
         self.sigmoid = NN.Sigmoid()
@@ -464,7 +462,10 @@ class Generator(NN.Module):
             if generating.sum() == 0:
                 break
         x = T.stack(x_list, 2)
-        x = self.conv(x)
+        x = self.conv1(x) + x
+        x = self.conv1(x) + x
+        x = self.conv1(x) + x
+        x = self.conv1(x) + x
         s = T.stack(s_list, 1)
         p = T.stack(p_list, 1)
   
