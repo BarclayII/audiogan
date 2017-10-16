@@ -202,6 +202,29 @@ def init_weights(module):
         elif name.find('bias') != -1:
             INIT.constant(param.data, 0)
 
+class Conv1dKernels(NN.Module):
+    def __init__(self,infilters, outfilters, kernel_sizes, stride):
+        NN.Module.__init__(self)
+        
+        def c(k):
+            return NN.Conv1d(infilters, outfilters, kernel_size=k, 
+                                stride=1, padding=(k-1)/2)
+        self.c1 = c(1)
+        self.c3 = c(3)
+        self.c5 = c(5)
+        self.c7 = c(7)
+        self.convs = [self.c1,self.c3,self.c5,self.c7]
+        
+        '''
+        self.convs = [NN.Conv1d(infilters, outfilters, kernel_size=kernel, 
+                                stride=1, padding=(kernel-1)/2)
+                        for kernel in kernel_sizes]
+        '''
+    def forward(self, x):
+        conv_outs = [c(x) for c in self.convs]
+        return T.cat(conv_outs,1)
+
+
 class Residual(NN.Module):
     def __init__(self,size, relu = True):
         NN.Module.__init__(self)
@@ -217,6 +240,22 @@ class Residual(NN.Module):
             return self.relu(self.linear(x) + x)
         else:
             return self.linear(x) + x
+
+class ResidualConv(NN.Module):
+    def __init__(self,size, kernel_size, relu = True):
+        NN.Module.__init__(self)
+        self.conv = NN.Conv1d(size, size, kernel_size=kernel_size, 
+                                stride=1, padding=(kernel_size-1)/2)
+        if relu:
+            self.relu = NN.LeakyReLU()
+        else:
+            self.relu = False
+
+    def forward(self, x):
+        if self.relu:
+            return self.relu(self.conv(x) + x)
+        else:
+            return self.conv(x) + x
 
 class ConvMask(NN.Module):
     def __init__(self):
@@ -344,6 +383,13 @@ class Generator(NN.Module):
                 NN.Linear(state_size, 1),
                 ))
         
+        self.conv = NN.DataParallel(NN.Sequential(
+                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1),
+                NN.LeakyReLU(),
+                ResidualConv(1025,3),
+                ResidualConv(1025,3,relu=False)
+                ))
+        
         init_weights(self.proj)
         init_weights(self.stopper)
         self.sigmoid = NN.Sigmoid()
@@ -444,12 +490,11 @@ class Discriminator(NN.Module):
                 NN.Linear(state_size, embed_size),
                 ))
         self.conv = NN.DataParallel(NN.Sequential(
-                ConvMask(),
-                NN.Conv1d(1025, 1025, kernel_size=3, stride=1, padding=1),
+                Conv1dKernels(1025, 200, kernel_sizes=[1,3,5,7], stride=1),
                 NN.LeakyReLU(),
-                ConvMask(),
-                NN.Conv1d(1025, 1025, kernel_size=3, stride=1, padding=1),
+                Conv1dKernels(800, 200, kernel_sizes=[1,3,5,7], stride=1),
                 NN.LeakyReLU(),
+                NN.Conv1d(800,1025,kernel_size=3,stride=1,padding=1),
                 ConvMask(),
                 ))
         init_weights(self.classifier)
