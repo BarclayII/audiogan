@@ -462,8 +462,8 @@ class Generator(NN.Module):
             generating *= (stop_t.data == 0).long().cpu()
             if generating.sum() == 0:
                 break
-
         x = T.stack(x_list, 2)
+        x = self.conv(x)
         s = T.stack(s_list, 1)
         p = T.stack(p_list, 1)
   
