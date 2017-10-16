@@ -244,7 +244,7 @@ class Embedder(NN.Module):
                 output_size // 2,
                 num_layers,
                 bidirectional=True,
-                fused=False
+                #fused=False
                 )
         init_lstm(self.rnn)
 
@@ -413,7 +413,7 @@ class Discriminator(NN.Module):
                 state_size // 2,
                 num_layers,
                 bidirectional=True,
-                fused=False,
+                #fused=False,
                 )
         init_lstm(self.rnn)
         self.residual_net = data_parallel(NN.Sequential(
