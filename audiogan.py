@@ -545,7 +545,7 @@ parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--gstatesize', type=int, default=1400, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
@@ -562,7 +562,7 @@ parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=0.4)
+parser.add_argument('--noisescale', type=float, default=0.5)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.7)
 parser.add_argument('--lambda_pg', type=float, default=0.1)
@@ -911,9 +911,9 @@ if __name__ == '__main__':
                     loss_fp_data += (T.abs(moment_by_index(fake_data.float(),exp, fake_len) - 
                                       moment_by_index(real_data.float(),exp,real_len))**1.5).mean()
                             
-                     
+                rank_g *= lambda_rank_g
                 
-                loss = _loss - rank_g/5
+                loss = _loss - rank_g
                 
                 reward = -loss.data# - loss_fp_len.data
                 baseline = reward.mean() if baseline is None else baseline * 0.5 + reward.mean() * 0.5
@@ -930,13 +930,13 @@ if __name__ == '__main__':
                         )
                 reward = (reward - baseline).unsqueeze(1) * weight_r.data
                 average_reward = reward.abs().mean()
-                reward = reward/average_reward/50.
+                reward = reward/average_reward
                 
                 reward_scatter.append(reward[:,0].cpu().numpy())
                 length_scatter.append(fake_len.cpu().data.numpy())
                 
                 _loss = _loss.mean()
-                _rank_g = -(rank_g/5).mean()
+                _rank_g = -(rank_g).mean()
                 for i, fake_stop in enumerate(fake_stop_list):
                     fake_stop.reinforce(lambda_pg_g * reward[:, i:i+1])
                 # Debug the gradient norms
@@ -945,7 +945,7 @@ if __name__ == '__main__':
                 loss_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 loss_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 opt_g.zero_grad()
-                _rank_g.backward(T.Tensor([lambda_rank_g]).cuda(), retain_graph=True)
+                _rank_g.backward(T.Tensor([1]).cuda(), retain_graph=True)
                 rank_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 rank_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 opt_g.zero_grad()
