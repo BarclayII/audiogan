@@ -503,11 +503,11 @@ class Discriminator(NN.Module):
                 NN.Linear(state_size, embed_size),
                 ))
         self.conv = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 200, kernel_sizes=[1,3,5,7], stride=1),
+                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1),
                 NN.LeakyReLU(),
-                Conv1dKernels(800, 200, kernel_sizes=[1,3,5,7], stride=1),
+                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1),
                 NN.LeakyReLU(),
-                NN.Conv1d(800,1025,kernel_size=3,stride=1,padding=1),
+                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1),
                 ConvMask(),
                 ))
         self.highway = NN.DataParallel(NN.Sequential(*[Highway(1025) for _ in range(4)]))
