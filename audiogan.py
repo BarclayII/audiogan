@@ -395,7 +395,7 @@ class Generator(NN.Module):
                 ))
         
         self.conv1 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
+                NN.Conv1d(1025,2048,kernel_size=3,stride=1,padding=1),
                 NN.LeakyReLU(),
                 NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
                 ))
