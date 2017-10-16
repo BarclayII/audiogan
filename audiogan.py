@@ -565,10 +565,10 @@ parser.add_argument('--maxlen', type=int, default=30, help='maximum sample lengt
 parser.add_argument('--noisescale', type=float, default=0.5)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.7)
-parser.add_argument('--lambda_pg', type=float, default=0.1)
+parser.add_argument('--lambda_pg', type=float, default=1)
 parser.add_argument('--lambda_rank', type=float, default=1)
-parser.add_argument('--lambda_loss', type=float, default=.3)
-parser.add_argument('--lambda_fp', type=float, default=5e-3)
+parser.add_argument('--lambda_loss', type=float, default=1)
+parser.add_argument('--lambda_fp', type=float, default=.1)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
@@ -585,10 +585,10 @@ if len(args.modelname) > 0:
 else:
     modelnamesave = args.modelnamesave
     modelnameload = args.modelnameload
-lambda_fp_g = args.lambda_fp
-lambda_pg_g = args.lambda_pg
-lambda_rank_g = args.lambda_rank
-lambda_loss_g = args.lambda_loss
+lambda_fp_g = args.lambda_fp/10.
+lambda_pg_g = args.lambda_pg/100.
+lambda_rank_g = args.lambda_rank/10.
+lambda_loss_g = args.lambda_loss/10.
 args.framesize = args.nfreq
 print modelnamesave
 print args
@@ -745,7 +745,6 @@ gen_iter = 0
 dis_iter = 0
 epoch = 1
 l = 10
-alpha = 0.1
 baseline = None
 
 def discriminate(d, data, length, embed, target, real):
@@ -979,22 +978,30 @@ if __name__ == '__main__':
                 if rank_grad_norm < .5:
                     lambda_rank_g *= 1.1
                 if rank_grad_norm > .5:
-                    lambda_rank_g /= 1.5
+                    lambda_rank_g /= 1.3
+                if rank_grad_norm > 5:
+                    lambda_rank_g /= 2.
                     
                 if fp_grad_norm < 2:
                     lambda_fp_g *= 1.1
                 if fp_grad_norm > 2:
-                    lambda_fp_g /=1.5
+                    lambda_fp_g /=1.3
+                if fp_grad_norm > 20:
+                    lambda_fp_g /=2.
                     
                 if pg_grad_norm < 2:
                     lambda_pg_g *= 1.1
                 if pg_grad_norm > 2:
-                    lambda_pg_g /= 1.5
+                    lambda_pg_g /= 1.3
+                if pg_grad_norm > 20:
+                    lambda_pg_g /= 2.
                     
                 if loss_grad_norm < 2:
                     lambda_loss_g *= 1.1
                 if loss_grad_norm > 2:
-                    lambda_loss_g /= 1.5
+                    lambda_loss_g /= 1.3
+                if loss_grad_norm > 20:
+                    lambda_loss_g /= 2.
                     
                 if lambda_rank_g > args.lambda_rank:
                     lambda_rank_g = args.lambda_rank
