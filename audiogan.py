@@ -206,20 +206,10 @@ class Conv1dKernels(NN.Module):
     def __init__(self,infilters, outfilters, kernel_sizes, stride):
         NN.Module.__init__(self)
         
-        def c(k):
-            return NN.Conv1d(infilters, outfilters, kernel_size=k, 
-                                stride=1, padding=(k-1)/2)
-        self.c1 = c(1)
-        self.c3 = c(3)
-        self.c5 = c(5)
-        self.c7 = c(7)
-        self.convs = [self.c1,self.c3,self.c5,self.c7]
         
-        '''
-        self.convs = [NN.Conv1d(infilters, outfilters, kernel_size=kernel, 
-                                stride=1, padding=(kernel-1)/2)
-                        for kernel in kernel_sizes]
-        '''
+        self.convs = NN.ModuleList([NN.Conv1d(infilters, outfilters, kernel_size=kernel, 
+                        stride=1, padding=(kernel-1)/2) for kernel in kernel_sizes])
+        
     def forward(self, x):
         conv_outs = [c(x) for c in self.convs]
         return T.cat(conv_outs,1)
@@ -654,7 +644,6 @@ d = Discriminator(
         nfreq = args.nfreq).cuda()
 
 def spect_to_audio(spect):
-    spect = spect + .5
     spect = NP.clip(spect, a_min = 0, a_max=None)
     spect = spect * 20
     audio_sample = librosa.istft(spect)
@@ -705,7 +694,6 @@ def add_scatterplot(writer, reward_scatter, length_scatter, gen_iter, tag = 'sca
 
 
 def add_heatmap_summary(writer, word, sample, gen_iter, tag='plot'):
-    sample = dataset.invtransform(sample)
     n_repeat = 4
     sample = NP.clip(sample,0,None)
     PL.imshow(NP.repeat(sample, n_repeat, 1))
@@ -745,6 +733,7 @@ d_train_writer = TF.summary.FileWriter(log_train_d)
 
 # Add real waveforms
 _, _, samples, lengths, cseq, cseq_fixed, clen_fixed = dataloader_val.next()
+samples = dataset.invtransform(samples)
 for i in range(batch_size):
     real_len = lengths[i]
     real_spect = samples[i, :,:real_len]
@@ -1050,6 +1039,7 @@ if __name__ == '__main__':
                 embed_g = e_g(cseq_fixed, clen_fixed)
                 fake_data, _, _, fake_len, fake_p = g(z=z_fixed, c=embed_g)
                 fake_data, fake_len = tonumpy(fake_data, fake_len)
+                fake_data = dataset.invtransform(fake_data)
     
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :,:fake_len[batch]]
