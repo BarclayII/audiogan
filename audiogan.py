@@ -212,7 +212,7 @@ class Conv1dKernels(NN.Module):
     
     def forward(self, x):
         conv_outs = [c(x) for c in self.convs]
-        return T.cat(conv_outs,1)
+        return T.cat(conv_outs,1)/10
 
 
 class Residual(NN.Module):
@@ -385,15 +385,26 @@ class Generator(NN.Module):
                 ))
         
         self.conv1 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,5,7], stride=1),
+                NN.LeakyReLU(),
+                NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
+                ))
+        self.conv2 = NN.DataParallel(NN.Sequential(
+                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1)
+                ))
+        self.conv3 = NN.DataParallel(NN.Sequential(
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,5,7], stride=1),
                 NN.LeakyReLU(),
                 NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
                 ))
         init_weights(self.conv1)
+        init_weights(self.conv2)
+        init_weights(self.conv3)
         init_weights(self.proj)
         init_weights(self.stopper)
         self.sigmoid = NN.Sigmoid()
         self.Softplus = NN.Softplus()
+        self.relu = NN.LeakyReLU()
         #self.tanh_scale = NN.Parameter(T.ones(1))
         #self.tanh_bias = NN.Parameter(T.zeros(1))
     
@@ -453,9 +464,18 @@ class Generator(NN.Module):
                 break
         x = T.stack(x_list, 2)
         x = self.conv1(x) + x
+        x = self.relu(x)
         x = self.conv1(x) + x
+        x = self.relu(x)
         x = self.conv1(x) + x
+        x = self.relu(x)
         x = self.conv1(x) + x
+        x = self.relu(x)
+        x = self.conv2(x)
+        x = self.conv3(x) + x
+        x = self.conv3(x) + x
+        x = self.conv3(x) + x
+        x = self.conv3(x) + x
         s = T.stack(s_list, 1)
         p = T.stack(p_list, 1)
   
@@ -548,7 +568,7 @@ class Discriminator(NN.Module):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=100, type=int)
-parser.add_argument('--rnng_layers', type=int, default=2)
+parser.add_argument('--rnng_layers', type=int, default=1)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
@@ -569,7 +589,7 @@ parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=0.5)
+parser.add_argument('--noisescale', type=float, default=1.)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.7)
 parser.add_argument('--lambda_pg', type=float, default=1)
