@@ -205,11 +205,11 @@ def init_weights(module):
 class Conv1dKernels(NN.Module):
     def __init__(self,infilters, outfilters, kernel_sizes, stride):
         NN.Module.__init__(self)
-        
-        
+      
         self.convs = NN.ModuleList([NN.Conv1d(infilters, outfilters, kernel_size=kernel, 
-                        stride=1, padding=(kernel-1)/2) for kernel in kernel_sizes])
-        
+                                stride=1, padding=(kernel-1)/2)
+                        for kernel in kernel_sizes])
+    
     def forward(self, x):
         conv_outs = [c(x) for c in self.convs]
         return T.cat(conv_outs,1)
