@@ -568,7 +568,7 @@ class Discriminator(NN.Module):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=100, type=int)
-parser.add_argument('--rnng_layers', type=int, default=1)
+parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
@@ -589,10 +589,10 @@ parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=1.)
+parser.add_argument('--noisescale', type=float, default=2.)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.7)
-parser.add_argument('--lambda_pg', type=float, default=1)
+parser.add_argument('--lambda_pg', type=float, default=100)
 parser.add_argument('--lambda_rank', type=float, default=1)
 parser.add_argument('--lambda_loss', type=float, default=1)
 parser.add_argument('--lambda_fp', type=float, default=.1)
@@ -613,7 +613,7 @@ else:
     modelnamesave = args.modelnamesave
     modelnameload = args.modelnameload
 lambda_fp_g = args.lambda_fp/10.
-lambda_pg_g = args.lambda_pg/100.
+lambda_pg_g = args.lambda_pg/10000.
 lambda_rank_g = args.lambda_rank/10.
 lambda_loss_g = args.lambda_loss/10.
 args.framesize = args.nfreq
@@ -812,7 +812,7 @@ if __name__ == '__main__':
             p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
-            if dis_iter % 5000 == 0:
+            if dis_iter % 2000 == 0:
                 args.noisescale = args.noisescale * .9
             with Timer.new('load', print_=False):
                 epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
@@ -1016,9 +1016,9 @@ if __name__ == '__main__':
                     lambda_fp_g /=2.
                     
                 if pg_grad_norm < 2:
-                    lambda_pg_g *= 1.1
+                    lambda_pg_g *= 1.2
                 if pg_grad_norm > 2:
-                    lambda_pg_g /= 1.3
+                    lambda_pg_g /= 1.4
                 if pg_grad_norm > 20:
                     lambda_pg_g /= 2.
                     
