@@ -206,20 +206,9 @@ class Conv1dKernels(NN.Module):
     def __init__(self,infilters, outfilters, kernel_sizes, stride):
         NN.Module.__init__(self)
         
-        def c(k):
-            return NN.Conv1d(infilters, outfilters, kernel_size=k, 
-                                stride=1, padding=(k-1)/2)
-        self.c1 = c(1)
-        self.c3 = c(3)
-        self.c5 = c(5)
-        self.c7 = c(7)
-        self.convs = [self.c1,self.c3,self.c5,self.c7]
-        
-        '''
-        self.convs = [NN.Conv1d(infilters, outfilters, kernel_size=kernel, 
+        self.convs = NN.ModuleList([NN.Conv1d(infilters, outfilters, kernel_size=kernel, 
                                 stride=1, padding=(kernel-1)/2)
-                        for kernel in kernel_sizes]
-        '''
+                        for kernel in kernel_sizes])
     def forward(self, x):
         conv_outs = [c(x) for c in self.convs]
         return T.cat(conv_outs,1)
@@ -395,7 +384,7 @@ class Generator(NN.Module):
                 ))
         
         self.conv1 = NN.DataParallel(NN.Sequential(
-                NN.Conv1d(1025,2048,kernel_size=3,stride=1,padding=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
                 NN.LeakyReLU(),
                 NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
                 ))
@@ -503,11 +492,11 @@ class Discriminator(NN.Module):
                 NN.Linear(state_size, embed_size),
                 ))
         self.conv = NN.DataParallel(NN.Sequential(
-                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1),
+                Conv1dKernels(1025, 200, kernel_sizes=[1,3,5,7], stride=1),
                 NN.LeakyReLU(),
-                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1),
+                Conv1dKernels(800, 200, kernel_sizes=[1,3,5,7], stride=1),
                 NN.LeakyReLU(),
-                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1),
+                NN.Conv1d(800,1025,kernel_size=3,stride=1,padding=1),
                 ConvMask(),
                 ))
         self.highway = NN.DataParallel(NN.Sequential(*[Highway(1025) for _ in range(4)]))
