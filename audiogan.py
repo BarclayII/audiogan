@@ -127,7 +127,7 @@ def binary_cross_entropy_with_logits_per_sample(input, target, weight=None):
     if weight is not None:
         loss = loss * weight
 
-    return loss.sum(1)
+    return loss.sum(1)/weight.sum(1)
 
 
 def advanced_index(t, dim, index):
@@ -442,7 +442,7 @@ class Generator(NN.Module):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.proj(lstm_h[-1])
             #x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/10
-            logit_s_t = self.stopper(lstm_h[-1])+10
+            logit_s_t = self.stopper(lstm_h[-1])+3
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -589,7 +589,7 @@ parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size'
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
-parser.add_argument('--dlr', type=float, default=1e-5)
+parser.add_argument('--dlr', type=float, default=1e-4)
 parser.add_argument('--glr', type=float, default=1e-5)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
