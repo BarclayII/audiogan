@@ -442,14 +442,14 @@ class Generator(NN.Module):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.proj(lstm_h[-1])
             #x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/10
-            logit_s_t = self.stopper(lstm_h[-1])+3
+            logit_s_t = self.stopper(lstm_h[-1])+1
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
             logp_t = T.cat([s1_t, s_t], 1)
             p_t = logp_t.exp()
             #how can i add to only one index without crashing it?
-            p_t = p_t + tovar(NP.array([.3, 0.02])).unsqueeze(0)
+            p_t = p_t + tovar(NP.array([1, 0.02])).unsqueeze(0)
             #p_t = p_t + 0.03
             stop_t = p_t.multinomial()
             length += generating
@@ -463,8 +463,6 @@ class Generator(NN.Module):
             if generating.sum() == 0:
                 break
         x = T.stack(x_list, 2)
-        x = self.conv1(x) + x
-        x = self.relu(x)
         x = self.conv1(x) + x
         x = self.relu(x)
         x = self.conv1(x) + x
