@@ -442,7 +442,7 @@ class Generator(NN.Module):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.proj(lstm_h[-1])
             #x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/10
-            logit_s_t = self.stopper(lstm_h[-1])
+            logit_s_t = self.stopper(lstm_h[-1])+1
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -469,11 +469,7 @@ class Generator(NN.Module):
         x = self.relu(x)
         x = self.conv1(x) + x
         x = self.relu(x)
-        x = self.conv1(x) + x
-        x = self.relu(x)
         x = self.conv2(x)
-        x = self.conv3(x) + x
-        x = self.conv3(x) + x
         x = self.conv3(x) + x
         x = self.conv3(x) + x
         s = T.stack(s_list, 1)
@@ -512,17 +508,28 @@ class Discriminator(NN.Module):
                 NN.LeakyReLU(),
                 NN.Linear(state_size, embed_size),
                 ))
-        self.conv = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 200, kernel_sizes=[1,3,5,7], stride=1),
-                NN.LeakyReLU(),
-                Conv1dKernels(800, 200, kernel_sizes=[1,3,5,7], stride=1),
-                NN.LeakyReLU(),
-                NN.Conv1d(800,1025,kernel_size=3,stride=1,padding=1),
+        self.conv1 = NN.DataParallel(NN.Sequential(
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,5,7], stride=1),
+                NN.LeakyReLU()
+                ))
+        self.conv2 = NN.DataParallel(NN.Sequential(
+                Conv1dKernels(2048, 512, kernel_sizes=[1,3,5,7], stride=1),
+                NN.LeakyReLU()
+                ))
+        self.conv3 = NN.DataParallel(NN.Sequential(
+                Conv1dKernels(2048, 512, kernel_sizes=[1,3,5,7], stride=1),
+                NN.LeakyReLU()
+                ))
+        self.conv4 = NN.DataParallel(NN.Sequential(
+                NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1),
                 ConvMask(),
                 ))
-        self.highway = NN.DataParallel(NN.Sequential(*[Highway(1025) for _ in range(4)]))
+        self.highway = NN.DataParallel(NN.Sequential(*[Highway(1025) for _ in range(2)]))
         init_weights(self.highway)
-        init_weights(self.conv)
+        init_weights(self.conv1)
+        init_weights(self.conv2)
+        init_weights(self.conv3)
+        init_weights(self.conv4)
         init_weights(self.classifier)
         init_weights(self.encoder)
 
@@ -536,7 +543,12 @@ class Discriminator(NN.Module):
         
         max_nframes = x.size()[2]
         convlengths = lengths
-        x = self.conv(x)
+        h1 = self.conv1(x)
+        h2 = self.conv2(h1)
+        h3 = self.conv3(h2)
+        h4 = self.conv4(h3)
+        x = h4
+        conv_acts = [h1,h2,h3,h4]
         x = x.permute(0,2,1)
         x = self.highway(x.contiguous().view(batch_size * max_nframes, -1)).view(batch_size, max_nframes, -1)
 
@@ -564,21 +576,21 @@ class Discriminator(NN.Module):
         c_unitnorm = c / (c.norm(2, 1, keepdim=True) + 1e-4)
         ranking = T.bmm(code_unitnorm.unsqueeze(1), c_unitnorm.unsqueeze(2)).squeeze()
 
-        return classifier_out, ranking, nframes
+        return classifier_out, ranking, nframes, conv_acts
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=100, type=int)
+parser.add_argument('--critic_iter', default=1000, type=int)
 parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
-parser.add_argument('--dstatesize', type=int, default=1024, help='RNN state size')
+parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size')
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
-parser.add_argument('--dlr', type=float, default=1e-4)
-parser.add_argument('--glr', type=float, default=1e-4)
+parser.add_argument('--dlr', type=float, default=1e-5)
+parser.add_argument('--glr', type=float, default=1e-5)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
@@ -592,10 +604,11 @@ parser.add_argument('--maxlen', type=int, default=30, help='maximum sample lengt
 parser.add_argument('--noisescale', type=float, default=2.)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.7)
-parser.add_argument('--lambda_pg', type=float, default=100)
+parser.add_argument('--lambda_pg', type=float, default=1)
 parser.add_argument('--lambda_rank', type=float, default=1)
 parser.add_argument('--lambda_loss', type=float, default=1)
 parser.add_argument('--lambda_fp', type=float, default=.1)
+parser.add_argument('--lambda_fp_conv', type=float, default=.1)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
@@ -613,7 +626,8 @@ else:
     modelnamesave = args.modelnamesave
     modelnameload = args.modelnameload
 lambda_fp_g = args.lambda_fp/10.
-lambda_pg_g = args.lambda_pg/10000.
+lambda_fp_conv = args.lambda_fp_conv/10.
+lambda_pg_g = args.lambda_pg/100.
 lambda_rank_g = args.lambda_rank/10.
 lambda_loss_g = args.lambda_loss/10.
 args.framesize = args.nfreq
@@ -774,7 +788,7 @@ l = 10
 baseline = None
 
 def discriminate(d, data, length, embed, target, real):
-    cls, rank, nframes = d(data, length, embed)
+    cls, rank, nframes, _ = d(data, length, embed)
     target = tovar(T.ones(*(cls.size())) * target)
     weight = length_mask(cls.size(), nframes)
     loss_c = binary_cross_entropy_with_logits_per_sample(cls, target, weight=weight) / nframes.float()
@@ -919,8 +933,8 @@ if __name__ == '__main__':
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data += noise
                 
-                cls_g, rank_g, nframes_g = d(fake_data, fake_len, embed_d)
-                
+                cls_g, rank_g, nframes_g, conv_acts_g = d(fake_data, fake_len, embed_d)
+                _, rank_d, nframes_d, conv_acts_d = d(real_data, real_len, embed_d)
                 if args.g_optim == 'boundary_seeking':
                     target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
                 else:
@@ -931,6 +945,11 @@ if __name__ == '__main__':
                 _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
                 _loss *= lambda_loss_g
                 loss_fp_data = 0
+                loss_fp_conv = 0
+                for fake_act, real_act in zip(conv_acts_g, conv_acts_d):
+                    for exp in [1,2,4]:
+                        loss_fp_conv += (T.abs(moment_by_index(fake_act.float(),exp, fake_len) - 
+                                      moment_by_index(real_act.float(),exp,real_len))**1.5).mean()
                 for exp in [1,2,4,6]:
                     loss_fp_data += T.abs(moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **1.5
                     loss_fp_data += (T.abs(moment_by_index(fake_data.float(),exp, fake_len) - 
@@ -977,6 +996,10 @@ if __name__ == '__main__':
                 loss_fp_data.backward(T.Tensor([lambda_fp_g]).cuda(), retain_graph=True)
                 fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+                opt_g.zero_grad()
+                loss_fp_conv.backward(T.Tensor([lambda_fp_conv]).cuda(), retain_graph=True)
+                conv_fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
+                conv_fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 
                 opt_g.zero_grad()
                 T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
@@ -990,6 +1013,8 @@ if __name__ == '__main__':
                             p.grad.data += rank_grad_dict[p]
                         if p in fp_grad_dict:
                             p.grad.data += fp_grad_dict[p]
+                        if p in conv_fp_grad_dict:
+                            p.grad.data += conv_fp_grad_dict[p]
     
                 
                 if not check_grad(param_d):
@@ -1015,6 +1040,13 @@ if __name__ == '__main__':
                 if fp_grad_norm > 20:
                     lambda_fp_g /=2.
                     
+                if conv_fp_grad_norm < 2:
+                    lambda_fp_conv *= 1.1
+                if conv_fp_grad_norm > 2:
+                    lambda_fp_conv /=1.3
+                if conv_fp_grad_norm > 20:
+                    lambda_fp_conv /=2.
+                    
                 if pg_grad_norm < 2:
                     lambda_pg_g *= 1.2
                 if pg_grad_norm > 2:
@@ -1033,6 +1065,8 @@ if __name__ == '__main__':
                     lambda_rank_g = args.lambda_rank
                 if lambda_fp_g > args.lambda_fp:
                     lambda_fp_g = args.lambda_fp
+                if lambda_fp_conv > args.lambda_fp_conv:
+                    lambda_fp_conv = args.lambda_fp_conv
                 if lambda_pg_g > args.lambda_pg:
                     lambda_pg_g = args.lambda_pg
                 if lambda_loss_g > args.lambda_loss:
@@ -1045,6 +1079,7 @@ if __name__ == '__main__':
                                 TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_grad_norm),
                                 TF.Summary.Value(tag='g_rank_grad_norm', simple_value=rank_grad_norm),
                                 TF.Summary.Value(tag='g_fp_data_grad_norm', simple_value=fp_grad_norm),
+                                TF.Summary.Value(tag='g_fp_conv_data_grad_norm', simple_value=conv_fp_grad_norm),
                                 TF.Summary.Value(tag='g_pg_grad_norm', simple_value=pg_grad_norm),
                                 ]
                             ),
