@@ -127,7 +127,7 @@ def binary_cross_entropy_with_logits_per_sample(input, target, weight=None):
     if weight is not None:
         loss = loss * weight
 
-    return loss.sum(1)/weight.sum(1)
+    return loss.sum(1)
 
 
 def advanced_index(t, dim, index):
@@ -385,7 +385,7 @@ class Generator(NN.Module):
                 ))
         
         self.conv1 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,3,5,7], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU(),
                 NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
                 ))
@@ -393,7 +393,7 @@ class Generator(NN.Module):
                 NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1)
                 ))
         self.conv3 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,3,5,7], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU(),
                 NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
                 ))
@@ -442,7 +442,7 @@ class Generator(NN.Module):
                 lstm_h[i], lstm_c[i] = self.rnn[i](lstm_h[i-1], (lstm_h[i], lstm_c[i]))
             x_t = self.proj(lstm_h[-1])
             #x_t = x_t * self.tanh_scale.expand_as(x_t) + self.tanh_bias.expand_as(x_t) + x_t/10
-            logit_s_t = self.stopper(lstm_h[-1])+1
+            logit_s_t = self.stopper(lstm_h[-1])
             s_t = log_sigmoid(logit_s_t)
             s1_t = log_one_minus_sigmoid(logit_s_t)
 
@@ -507,15 +507,15 @@ class Discriminator(NN.Module):
                 NN.Linear(state_size, embed_size),
                 ))
         self.conv1 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,3,5,7], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv2 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,3,5,7], stride=1),
+                Conv1dKernels(2048, 512, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv3 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,3,5,7], stride=1),
+                Conv1dKernels(2048, 512, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv4 = NN.DataParallel(NN.Sequential(
@@ -587,7 +587,7 @@ parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size'
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
-parser.add_argument('--dlr', type=float, default=1e-4)
+parser.add_argument('--dlr', type=float, default=1e-5)
 parser.add_argument('--glr', type=float, default=1e-5)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
@@ -598,8 +598,8 @@ parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=100)
 parser.add_argument('--minwordlen', type=int, default=1)
-parser.add_argument('--maxlen', type=int, default=30, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=2.)
+parser.add_argument('--maxlen', type=int, default=20, help='maximum sample length (0 for unlimited)')
+parser.add_argument('--noisescale', type=float, default=10.)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.7)
 parser.add_argument('--lambda_pg', type=float, default=1)
@@ -824,7 +824,7 @@ if __name__ == '__main__':
             p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
-            if dis_iter % 2000 == 0:
+            if dis_iter % 200 == 0:
                 args.noisescale = args.noisescale * .9
             with Timer.new('load', print_=False):
                 epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
@@ -1031,16 +1031,16 @@ if __name__ == '__main__':
                 if rank_grad_norm > 5:
                     lambda_rank_g /= 2.
                     
-                if fp_grad_norm < 2:
+                if fp_grad_norm < 1:
                     lambda_fp_g *= 1.1
-                if fp_grad_norm > 2:
+                if fp_grad_norm > 1:
                     lambda_fp_g /=1.3
-                if fp_grad_norm > 20:
+                if fp_grad_norm > 10:
                     lambda_fp_g /=2.
                     
-                if conv_fp_grad_norm < 3:
+                if conv_fp_grad_norm < 2:
                     lambda_fp_conv *= 1.1
-                if conv_fp_grad_norm > 3:
+                if conv_fp_grad_norm > 2:
                     lambda_fp_conv /=1.3
                 if conv_fp_grad_norm > 20:
                     lambda_fp_conv /=2.
@@ -1052,9 +1052,9 @@ if __name__ == '__main__':
                 if pg_grad_norm > 20:
                     lambda_pg_g /= 2.
                     
-                if loss_grad_norm < 2:
+                if loss_grad_norm < 4:
                     lambda_loss_g *= 1.1
-                if loss_grad_norm > 2:
+                if loss_grad_norm > 4:
                     lambda_loss_g /= 1.3
                 if loss_grad_norm > 20:
                     lambda_loss_g /= 2.
@@ -1074,6 +1074,7 @@ if __name__ == '__main__':
                         TF.Summary(
                             value=[
                                 TF.Summary.Value(tag='g_grad_norm', simple_value=g_grad_norm),
+                                TF.Summary.Value(tag='g_len_mean', simple_value=fake_len.cpu().data.numpy().mean()),
                                 TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_grad_norm),
                                 TF.Summary.Value(tag='g_rank_grad_norm', simple_value=rank_grad_norm),
                                 TF.Summary.Value(tag='g_fp_data_grad_norm', simple_value=fp_grad_norm),
