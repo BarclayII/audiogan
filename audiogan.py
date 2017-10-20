@@ -634,9 +634,9 @@ print args
 reward_scatter = []
 length_scatter = []
 batch_size = args.batchsize
-
+batch_size_massive = batch_size * 100
 dataset_h5, maxlen, dataloader, dataloader_val, keys_train, keys_val = \
-        dataset.dataloader(batch_size, args, maxlen=args.maxlen, frame_size=args.framesize)
+        dataset.dataloader(batch_size_massive, args, maxlen=args.maxlen, frame_size=args.framesize)
 maxcharlen_train = max(len(k) for k in keys_train)
 
 def logdirs(logdir, modelnamesave):
@@ -765,6 +765,11 @@ d_train_writer = TF.summary.FileWriter(log_train_d)
 
 # Add real waveforms
 _, _, samples, lengths, cseq, cseq_fixed, clen_fixed = dataloader_val.next()
+samples = samples[:batch_size]
+lengths = lengths[:batch_size]
+cseq = cseq[:batch_size]
+cseq_fixed = cseq_fixed[:batch_size]
+clen_fixed = clen_fixed[:batch_size]
 samples = dataset.invtransform(samples)
 for i in range(batch_size):
     real_len = lengths[i]
@@ -796,7 +801,7 @@ def discriminate(d, data, length, embed, target, real):
     num = weight.data.sum()
     acc = correct / num
     return cls, nframes, target, weight, loss_c, rank, acc
-
+init_data_loader = 1
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
@@ -827,39 +832,43 @@ if __name__ == '__main__':
             if dis_iter % 200 == 0:
                 args.noisescale = args.noisescale * .9
             with Timer.new('load', print_=False):
-                epoch, batch_id, _real_data, _real_len, _, _cs, _cl = dataloader.next()
-                epoch, batch_id, _real_data2, _real_len2, _, _cs2, _cl2 = dataloader.next()
-
+                if init_data_loader or dis_iter % 1000 == 0:
+                    init_data_loader = 0
+                    epoch, batch_id, _real_data_massive, \
+                        _real_len_massive, _, _cs_massive, \
+                        _cl_massive = dataloader.next()
+                    num_samples_loaded = _real_data_massive.size()[0]
+                random_indexes = np.random.choice(
+                        num_samples_loaded, batch_size, replace = True)
+                _real_data = _real_data_massive[random_indexes]
+                _real_len = _real_len_massive[random_indexes]
+                _cs = _cs_massive[random_indexes]
+                _cl = _cl_massive[random_indexes]
+                
+                
+                
             with Timer.new('train_d', print_=False):
                 noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
                 real_data = tovar(_real_data) + noise
                 real_len = tovar(_real_len).long()
-                noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data2 = tovar(_real_data2) + noise
-                real_len2 = tovar(_real_len2).long()
                 cs = tovar(_cs).long()
                 cl = tovar(_cl).long()
-                cs2 = tovar(_cs2).long()
-                cl2 = tovar(_cl2).long()
 
                 embed_d = e_d(cs, cl)
-                embed_g2 = e_g(cs2, cl2)
-                embed_d2 = e_d(cs2, cl2)
+                embed_g = e_g(cs, cl)
 
                 cls_d, _, _, _, loss_d, rank_d, acc_d = \
                         discriminate(d, real_data, real_len, embed_d, 0.9, True)
-                cls_d_x, _, _, _, _, rank_d_x, acc_d_x = \
-                        discriminate(d, real_data, real_len, embed_d2, 0.9, True)
-                cls_d_x2, _, _, _, _, rank_d_x2, acc_d_x2 = \
-                        discriminate(d, real_data2, real_len2, embed_d, 0.9, True)
+                cls_d_x, _, _, _, _, rank_d_x, acc_d_x = discriminate(
+                        d, real_data, real_len, T.cat([embed_d[:,-1], embed_d[:,:-1]],1), 0.9, True)
 
-                fake_data, _, _, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g2)
+                fake_data, _, _, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data = tovar((fake_data + noise).data)
                 cls_g, _, _, _, loss_g, rank_g, acc_g = \
-                        discriminate(d, fake_data, fake_len, embed_d2, 0, False)
+                        discriminate(d, fake_data, fake_len, embed_d, 0, False)
 
-                loss_rank = ((1 - rank_d + rank_d_x).clamp(min=0) + (1 - rank_d + rank_d_x2).clamp(min=0)).mean()
+                loss_rank = ((1 - rank_d + rank_d_x).clamp(min=0)).mean()
                 loss = loss_d + loss_g + loss_rank/10
                 opt_d.zero_grad()
                 loss.backward()
@@ -900,7 +909,7 @@ if __name__ == '__main__':
                     )
 
             accs = [acc_d, acc_g]
-            if batch_id % 1 == 0:
+            if dis_iter % 1 == 0:
                 print 'D', epoch, dis_iter, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
                 print 'lengths'
                 print 'fake', list(fake_len.data)
@@ -920,11 +929,12 @@ if __name__ == '__main__':
         for _ in range(args.gencatchup):
             gen_iter += 1
             
-            _, cs, cl, _, _ = dataset.pick_words(
-                    batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
-            with Timer.new('train_g', print_=False):
+            if args.gencatchup > 1:
+                _, cs, cl, _, _ = dataset.pick_words(
+                        batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
                 cs = tovar(cs).long()
                 cl = tovar(cl).long()
+            with Timer.new('train_g', print_=False):
                 embed_g = e_g(cs, cl)
                 embed_d = e_d(cs, cl)
                 fake_data, fake_s, fake_stop_list, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g)
