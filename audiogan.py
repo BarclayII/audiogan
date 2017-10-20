@@ -837,7 +837,7 @@ if __name__ == '__main__':
                     epoch, batch_id, _real_data_massive, \
                         _real_len_massive, _, _cs_massive, \
                         _cl_massive = dataloader.next()
-                    num_samples_loaded = _real_data_massive.size()[0]
+                    num_samples_loaded = _real_data_massive.shape[0]
                 random_indexes = np.random.choice(
                         num_samples_loaded, batch_size, replace = True)
                 _real_data = _real_data_massive[random_indexes]
