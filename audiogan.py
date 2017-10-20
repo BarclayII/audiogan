@@ -881,8 +881,8 @@ if __name__ == '__main__':
                 d_grad_norm = clip_grad(param_d, args.dgradclip)
                 opt_d.step()
 
-            loss_d, loss_g, loss_rank, loss, cls_d, cls_g, rank_d, rank_d_x, rank_d_x2 = \
-                    tonumpy(loss_d, loss_g, loss_rank, loss, cls_d, cls_g, rank_d, rank_d_x, rank_d_x2)
+            loss_d, loss_g, loss_rank, loss, cls_d, cls_g, rank_d, rank_d_x = \
+                    tonumpy(loss_d, loss_g, loss_rank, loss, cls_d, cls_g, rank_d, rank_d_x)
             d_train_writer.add_summary(
                     TF.Summary(
                         value=[
@@ -898,8 +898,6 @@ if __name__ == '__main__':
                             TF.Summary.Value(tag='rank_d/std', simple_value=rank_d.std()),
                             TF.Summary.Value(tag='rank_d_x/mean', simple_value=rank_d_x.mean()),
                             TF.Summary.Value(tag='rank_d_x/std', simple_value=rank_d_x.std()),
-                            TF.Summary.Value(tag='rank_d_x2/mean', simple_value=rank_d_x2.mean()),
-                            TF.Summary.Value(tag='rank_d_x2/std', simple_value=rank_d_x2.std()),
                             TF.Summary.Value(tag='acc_d', simple_value=acc_d),
                             TF.Summary.Value(tag='acc_g', simple_value=acc_g),
                             TF.Summary.Value(tag='d_grad_norm', simple_value=d_grad_norm),
