@@ -1009,7 +1009,8 @@ if __name__ == '__main__':
                 _loss = _loss.mean()
                 _rank_g = -(rank_g).mean()
                 for i, fake_stop in enumerate(fake_stop_list):
-                    fake_stop.reinforce(lambda_pg_g * reward[:, i:i+1])
+                    if i > 1:
+                        fake_stop.reinforce(lambda_pg_g * reward[:, i:i+1])
                 # Debug the gradient norms
                 opt_g.zero_grad()
                 _loss.backward(retain_graph=True)
@@ -1029,7 +1030,7 @@ if __name__ == '__main__':
                 conv_fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 
                 opt_g.zero_grad()
-                T.autograd.backward(fake_stop_list, [None for _ in fake_stop_list])
+                T.autograd.backward(fake_stop_list[2:], [None for _ in fake_stop_list[2:]])
                 pg_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 # Do the real thing
                 for p in param_g:
@@ -1081,9 +1082,9 @@ if __name__ == '__main__':
                 if pg_grad_norm > 10:
                     lambda_pg_g /= 2.
                     
-                if loss_grad_norm < 3:
+                if loss_grad_norm < 2:
                     lambda_loss_g *= 1.2
-                if loss_grad_norm > 3:
+                if loss_grad_norm > 2:
                     lambda_loss_g /= 1.4
                 if loss_grad_norm > 20:
                     lambda_loss_g /= 2.
