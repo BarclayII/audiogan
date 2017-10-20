@@ -838,7 +838,7 @@ if __name__ == '__main__':
                         _real_len_massive, _, _cs_massive, \
                         _cl_massive = dataloader.next()
                     num_samples_loaded = _real_data_massive.shape[0]
-                random_indexes = np.random.choice(
+                random_indexes = NP.random.choice(
                         num_samples_loaded, batch_size, replace = True)
                 _real_data = _real_data_massive[random_indexes]
                 _real_len = _real_len_massive[random_indexes]
@@ -860,7 +860,7 @@ if __name__ == '__main__':
                 cls_d, _, _, _, loss_d, rank_d, acc_d = \
                         discriminate(d, real_data, real_len, embed_d, 0.9, True)
                 cls_d_x, _, _, _, _, rank_d_x, acc_d_x = discriminate(
-                        d, real_data, real_len, T.cat([embed_d[:,-1], embed_d[:,:-1]],1), 0.9, True)
+                        d, real_data, real_len, T.cat([embed_d[-1:,:], embed_d[:-1,:]],0), 0.9, True)
 
                 fake_data, _, _, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
