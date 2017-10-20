@@ -376,26 +376,30 @@ class Generator(NN.Module):
         
         self.proj = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
-                Residual(state_size),
                 NN.Linear(state_size, frame_size),
                 ))
         self.stopper = NN.DataParallel(NN.Sequential(
                 Residual(state_size),
+                NN.Linear(state_size, state_size),
+                NN.LeakyReLU(),
                 NN.Linear(state_size, 1),
                 ))
         
         self.conv1 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,1,3,3], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
                 NN.LeakyReLU(),
+                ConvMask(),
                 NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
                 ))
         self.conv2 = NN.DataParallel(NN.Sequential(
                 NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1)
                 ))
         self.conv3 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,1,3,3], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
                 NN.LeakyReLU(),
-                NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
+                ConvMask(),
+                NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1),
+                ConvMask()
                 ))
         init_weights(self.conv1)
         init_weights(self.conv2)
@@ -405,10 +409,12 @@ class Generator(NN.Module):
         self.sigmoid = NN.Sigmoid()
         self.Softplus = NN.Softplus()
         self.relu = NN.LeakyReLU()
+        self.ConvMask = ConvMask()
         #self.tanh_scale = NN.Parameter(T.ones(1))
         #self.tanh_bias = NN.Parameter(T.zeros(1))
     
     def forward(self, batch_size=None, length=None, z=None, c=None):
+        global convlengths
         frame_size = self._frame_size
         noise_size = self._noise_size
         state_size = self._state_size
@@ -459,15 +465,29 @@ class Generator(NN.Module):
             stop_list.append(stop_t)
             p_list.append(p_t)
             stop_t = stop_t.squeeze()
-            generating *= (stop_t.data == 0).long().cpu()
+            if t > 1:
+                generating *= (stop_t.data == 0).long().cpu()
             if generating.sum() == 0:
                 break
+        convlengths = tovar(length)
         x = T.stack(x_list, 2)
+        x = self.ConvMask(x)
         x = self.conv1(x) + x
+        x = self.ConvMask(x)
         x = self.relu(x)
         x = self.conv1(x) + x
+        x = self.ConvMask(x)
+        x = self.relu(x)
+        x = self.conv1(x) + x
+        x = self.ConvMask(x)
+        x = self.relu(x)
+        x = self.conv1(x) + x
+        x = self.ConvMask(x)
         x = self.relu(x)
         x = self.conv2(x)
+        x = self.ConvMask(x)
+        x = self.conv3(x) + x
+        x = self.conv3(x) + x
         x = self.conv3(x) + x
         x = self.conv3(x) + x
         s = T.stack(s_list, 1)
@@ -507,15 +527,16 @@ class Discriminator(NN.Module):
                 NN.Linear(state_size, embed_size),
                 ))
         self.conv1 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,1,3,3], stride=1),
+                ConvMask(),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv2 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,1,3,3], stride=1),
+                Conv1dKernels(2048, 512, kernel_sizes=[1,3,3,5], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv3 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,1,3,3], stride=1),
+                Conv1dKernels(2048, 512, kernel_sizes=[1,3,3,5], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv4 = NN.DataParallel(NN.Sequential(
@@ -602,11 +623,11 @@ parser.add_argument('--maxlen', type=int, default=20, help='maximum sample lengt
 parser.add_argument('--noisescale', type=float, default=10.)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.7)
-parser.add_argument('--lambda_pg', type=float, default=1)
-parser.add_argument('--lambda_rank', type=float, default=1)
+parser.add_argument('--lambda_pg', type=float, default=.1)
+parser.add_argument('--lambda_rank', type=float, default=.1)
 parser.add_argument('--lambda_loss', type=float, default=1)
-parser.add_argument('--lambda_fp', type=float, default=.1)
-parser.add_argument('--lambda_fp_conv', type=float, default=.1)
+parser.add_argument('--lambda_fp', type=float, default=.01)
+parser.add_argument('--lambda_fp_conv', type=float, default=.01)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
@@ -829,7 +850,7 @@ if __name__ == '__main__':
             p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
-            if dis_iter % 200 == 0:
+            if dis_iter % 500 == 0:
                 args.noisescale = args.noisescale * .9
             with Timer.new('load', print_=False):
                 if init_data_loader or dis_iter % 1000 == 0:
@@ -1046,24 +1067,24 @@ if __name__ == '__main__':
                 if fp_grad_norm > 10:
                     lambda_fp_g /=2.
                     
-                if conv_fp_grad_norm < 2:
+                if conv_fp_grad_norm < 1:
                     lambda_fp_conv *= 1.1
-                if conv_fp_grad_norm > 2:
+                if conv_fp_grad_norm > 1:
                     lambda_fp_conv /=1.3
-                if conv_fp_grad_norm > 20:
+                if conv_fp_grad_norm > 10:
                     lambda_fp_conv /=2.
                     
-                if pg_grad_norm < 2:
+                if pg_grad_norm < 1:
                     lambda_pg_g *= 1.2
-                if pg_grad_norm > 2:
+                if pg_grad_norm > 1:
                     lambda_pg_g /= 1.4
-                if pg_grad_norm > 20:
+                if pg_grad_norm > 10:
                     lambda_pg_g /= 2.
                     
-                if loss_grad_norm < 4:
-                    lambda_loss_g *= 1.1
-                if loss_grad_norm > 4:
-                    lambda_loss_g /= 1.3
+                if loss_grad_norm < 3:
+                    lambda_loss_g *= 1.2
+                if loss_grad_norm > 3:
+                    lambda_loss_g /= 1.4
                 if loss_grad_norm > 20:
                     lambda_loss_g /= 2.
                     
@@ -1094,7 +1115,7 @@ if __name__ == '__main__':
                         )
                 opt_g.step()
             
-            if gen_iter % 20 == 0:
+            if gen_iter % 100 == 0:
                 add_scatterplot(d_train_writer,reward_scatter, length_scatter, gen_iter, 'scatterplot')
                 reward_scatter = []
                 length_scatter = []
@@ -1106,7 +1127,7 @@ if __name__ == '__main__':
                 for batch in range(batch_size):
                     fake_sample = fake_data[batch, :,:fake_len[batch]]
                     add_heatmap_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_spectogram')
-                if gen_iter % 200 == 0:
+                if gen_iter % 1000 == 0:
                     for batch in range(batch_size):
                         if fake_len[batch] > 3:
                             fake_spect = fake_data[batch, :,:fake_len[batch]]
