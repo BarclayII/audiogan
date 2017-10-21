@@ -355,8 +355,9 @@ class Generator(NN.Module):
                  frame_size=200,
                  embed_size=200,
                  noise_size=100,
-                 state_size=1024,
+                 state_size=1025,
                  num_layers=1,
+                 maxlen=1
                  ):
         NN.Module.__init__(self)
         self._frame_size = frame_size
@@ -364,48 +365,37 @@ class Generator(NN.Module):
         self._state_size = state_size
         self._embed_size = embed_size
         self._num_layers = num_layers
-
-        self.rnn = NN.ModuleList()
-        lstm = NN.LSTMCell(frame_size + embed_size + noise_size, state_size)
-        init_lstm(lstm)
-        self.rnn.append(NN.DataParallel(lstm))
-        for _ in range(1, num_layers):
-            lstm = NN.LSTMCell(state_size, state_size)
-            init_lstm(lstm)
-            self.rnn.append(NN.DataParallel(lstm))
-        
-        self.proj = NN.DataParallel(NN.Sequential(
-                Residual(state_size),
-                NN.Linear(state_size, frame_size),
-                ))
-        self.stopper = NN.DataParallel(NN.Sequential(
-                Residual(state_size),
-                NN.Linear(state_size, state_size),
+        self._maxlen = maxlen
+        self._last_hidden_size = last_hidden_size = state_size * maxlen
+        self.stopper_conv = NN.DataParallel(NN.Sequential(
+                Conv1dKernels(1025, 256, kernel_sizes=[1,3,5,7], stride=1),
                 NN.LeakyReLU(),
-                NN.Linear(state_size, 1),
+                Conv1dKernels(1024, 256, kernel_sizes=[1,3,5,7], stride=1),
+                NN.LeakyReLU(),
+                NN.Conv1d(1024,1,kernel_size=3,stride=1,padding=1)
                 ))
         
+        self.conv0 = NN.DataParallel(NN.Sequential(
+                NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1)
+                ))
         self.conv1 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,5,7], stride=1),
                 NN.LeakyReLU(),
-                ConvMask(),
                 NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1)
                 ))
         self.conv2 = NN.DataParallel(NN.Sequential(
                 NN.Conv1d(1025,1025,kernel_size=3,stride=1,padding=1)
                 ))
         self.conv3 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,3,5,7], stride=1),
                 NN.LeakyReLU(),
-                ConvMask(),
                 NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1),
-                ConvMask()
                 ))
+        init_weights(self.conv0)
         init_weights(self.conv1)
         init_weights(self.conv2)
         init_weights(self.conv3)
-        init_weights(self.proj)
-        init_weights(self.stopper)
+        init_weights(self.stopper_conv)
         self.sigmoid = NN.Sigmoid()
         self.Softplus = NN.Softplus()
         self.relu = NN.LeakyReLU()
@@ -420,22 +410,19 @@ class Generator(NN.Module):
         state_size = self._state_size
         embed_size = self._embed_size
         num_layers = self._num_layers
+        maxlen = self._maxlen
 
         if z is None:
             nframes = length#div_roundup(length, frame_size)
-            z = tovar(T.randn(batch_size, nframes, noise_size))
+            z = tovar(T.randn(batch_size, maxlen, state_size - embed_size))
         else:
-            batch_size, nframes, _ = z.size()
+            batch_size, _, _ = z.size()
 
-        c = c.unsqueeze(1).expand(batch_size, nframes, embed_size)
+        c = c.unsqueeze(1).expand(batch_size, maxlen, embed_size)
         z = T.cat([z, c], 2)
 
-        lstm_h = [tovar(T.zeros(batch_size, state_size)) for _ in range(num_layers)]
-        lstm_c = [tovar(T.zeros(batch_size, state_size)) for _ in range(num_layers)]
-        x_t = tovar(T.zeros(batch_size, frame_size))
-        generating = T.ones(batch_size).long()
-        length = T.zeros(batch_size).long()
 
+        '''
         x_list = []
         s_list = []
         stop_list = []
@@ -471,29 +458,37 @@ class Generator(NN.Module):
                 break
         convlengths = tovar(length)
         x = T.stack(x_list, 2)
-        x = self.ConvMask(x)
+        '''
+        z = z.permute(0,2,1)
+        x = self.conv0(z)
         x = self.conv1(x) + x
-        x = self.ConvMask(x)
         x = self.relu(x)
         x = self.conv1(x) + x
-        x = self.ConvMask(x)
         x = self.relu(x)
         x = self.conv1(x) + x
-        x = self.ConvMask(x)
         x = self.relu(x)
         x = self.conv1(x) + x
-        x = self.ConvMask(x)
         x = self.relu(x)
         x = self.conv2(x)
+        x = self.conv3(x) + x
+        x = self.conv3(x) + x
+        x = self.conv3(x) + x
+        stop = self.stopper_conv(x)
+        stop = stop.view(batch_size,-1)
+        stop = self.Softplus(stop)
+        stop_raw = stop.multinomial()
+        stop = stop_raw + 1
+        x = self.conv3(x) + x
+        convlengths = stop.squeeze()
+        x = x.permute(0,2,1)
         x = self.ConvMask(x)
-        x = self.conv3(x) + x
-        x = self.conv3(x) + x
-        x = self.conv3(x) + x
-        x = self.conv3(x) + x
-        s = T.stack(s_list, 1)
-        p = T.stack(p_list, 1)
+        x = x.permute(0,2,1)
+        stop = stop.squeeze()
+        stop_raw = stop_raw.squeeze()
+        #s = T.stack(s_list, 1)
+        #p = T.stack(p_list, 1)
   
-        return x, s, stop_list, tovar(length), p
+        return x, stop, stop_raw
 
 
 class Discriminator(NN.Module):
@@ -603,9 +598,9 @@ parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
 parser.add_argument('--noisesize', type=int, default=100, help='noise vector size')
-parser.add_argument('--gstatesize', type=int, default=1024, help='RNN state size')
+parser.add_argument('--gstatesize', type=int, default=1025, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size')
-parser.add_argument('--batchsize', type=int, default=32)
+parser.add_argument('--batchsize', type=int, default=4)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
 parser.add_argument('--dlr', type=float, default=1e-5)
@@ -655,7 +650,7 @@ print args
 reward_scatter = []
 length_scatter = []
 batch_size = args.batchsize
-batch_size_massive = batch_size * 100
+batch_size_massive = batch_size * 10
 dataset_h5, maxlen, dataloader, dataloader_val, keys_train, keys_val = \
         dataset.dataloader(batch_size_massive, args, maxlen=args.maxlen, frame_size=args.framesize)
 maxcharlen_train = max(len(k) for k in keys_train)
@@ -675,7 +670,7 @@ def logdirs(logdir, modelnamesave):
 log_train_d = logdirs(args.logdir, modelnamesave)
 png_file = '%s/temp.png' % log_train_d
 wav_file = '%s/temp.wav' % log_train_d
-
+maxlen = args.maxlen
 
 g = Generator(
         frame_size=args.framesize,
@@ -683,9 +678,10 @@ g = Generator(
         state_size=args.gstatesize,
         embed_size=args.embedsize,
         num_layers=args.rnng_layers,
+        maxlen=args.maxlen
         ).cuda()
 nframes = maxlen#div_roundup(maxlen, args.framesize)
-z_fixed = tovar(RNG.randn(batch_size, nframes, args.noisesize))
+z_fixed = tovar(RNG.randn(batch_size, maxlen, 1025 - args.embedsize))
 
 e_g = Embedder(args.embedsize).cuda()
 e_d = Embedder(args.embedsize).cuda()
@@ -883,7 +879,7 @@ if __name__ == '__main__':
                 cls_d_x, _, _, _, _, rank_d_x, acc_d_x = discriminate(
                         d, real_data, real_len, T.cat([embed_d[-1:,:], embed_d[:-1,:]],0), 0.9, True)
 
-                fake_data, _, _, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g)
+                fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data = tovar((fake_data + noise).data)
                 cls_g, _, _, _, loss_g, rank_g, acc_g = \
@@ -956,7 +952,7 @@ if __name__ == '__main__':
             with Timer.new('train_g', print_=False):
                 embed_g = e_g(cs, cl)
                 embed_d = e_d(cs, cl)
-                fake_data, fake_s, fake_stop_list, fake_len, fake_p = g(batch_size=batch_size, length=maxlen, c=embed_g)
+                fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data += noise
                 
@@ -1008,9 +1004,7 @@ if __name__ == '__main__':
                 
                 _loss = _loss.mean()
                 _rank_g = -(rank_g).mean()
-                for i, fake_stop in enumerate(fake_stop_list):
-                    if i > 1:
-                        fake_stop.reinforce(lambda_pg_g * reward[:, i:i+1])
+                stop_raw.reinforce(lambda_pg_g * reward)
                 # Debug the gradient norms
                 opt_g.zero_grad()
                 _loss.backward(retain_graph=True)
@@ -1030,7 +1024,7 @@ if __name__ == '__main__':
                 conv_fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 
                 opt_g.zero_grad()
-                T.autograd.backward(fake_stop_list[2:], [None for _ in fake_stop_list[2:]])
+                T.autograd.backward(fake_len, [None for _ in fake_len])
                 pg_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
                 # Do the real thing
                 for p in param_g:
@@ -1121,7 +1115,7 @@ if __name__ == '__main__':
                 reward_scatter = []
                 length_scatter = []
                 embed_g = e_g(cseq_fixed, clen_fixed)
-                fake_data, _, _, fake_len, fake_p = g(z=z_fixed, c=embed_g)
+                fake_data, fake_len, _ = g(z=z_fixed, c=embed_g)
                 fake_data, fake_len = tonumpy(fake_data, fake_len)
                 fake_data = dataset.invtransform(fake_data)
     
