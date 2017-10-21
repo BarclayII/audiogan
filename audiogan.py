@@ -128,6 +128,14 @@ def binary_cross_entropy_with_logits_per_sample(input, target, weight=None):
         loss = loss * weight
 
     return loss.sum(1)
+def binary_cross_entropy_with_logits(input, target):
+    if not target.is_same_size(input):
+        raise ValueError("Target size ({}) must be the same as input size ({})".format(target.size(), input.size()))
+
+    max_val = (-input).clamp(min=0)
+    loss = input - input * target + max_val + ((-max_val).exp() + (-input - max_val).exp()).log()
+
+    return loss
 
 
 def advanced_index(t, dim, index):
@@ -484,7 +492,7 @@ class Generator(NN.Module):
         x = self.ConvMask(x)
         x = x.permute(0,2,1)
         stop = stop.squeeze()
-        stop_raw = stop_raw.squeeze()
+        stop_raw = stop_raw
         #s = T.stack(s_list, 1)
         #p = T.stack(p_list, 1)
   
@@ -496,7 +504,8 @@ class Discriminator(NN.Module):
                  state_size=1024,
                  embed_size=200,
                  num_layers=1,
-                 nfreq = 1025):
+                 nfreq = 1025,
+                 maxlen=0):
         NN.Module.__init__(self)
         self._state_size = state_size
         self._embed_size = embed_size
@@ -504,22 +513,15 @@ class Discriminator(NN.Module):
         self._frame_size = nfreq
         
         frame_size = args.nfreq
-        self.rnn = NN.LSTM(
-                frame_size,
-                state_size // 2,
-                num_layers,
-                bidirectional=True,
-                )
-        init_lstm(self.rnn)
         self.classifier = NN.DataParallel(NN.Sequential(
-                NN.Linear(state_size, state_size // 2),
+                NN.Linear(maxlen, maxlen),
                 NN.LeakyReLU(),
-                NN.Linear(state_size // 2, 1),
+                NN.Linear(maxlen, 1),
                 ))
         self.encoder = NN.DataParallel(NN.Sequential(
-                NN.Linear(state_size, state_size),
+                NN.Linear(maxlen, maxlen),
                 NN.LeakyReLU(),
-                NN.Linear(state_size, embed_size),
+                NN.Linear(maxlen, 1),
                 ))
         self.conv1 = NN.DataParallel(NN.Sequential(
                 ConvMask(),
@@ -535,15 +537,22 @@ class Discriminator(NN.Module):
                 NN.LeakyReLU()
                 ))
         self.conv4 = NN.DataParallel(NN.Sequential(
-                NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1),
+                NN.Conv1d(2048,1024,kernel_size=3,stride=1,padding=1),
+                NN.LeakyReLU(),
                 ConvMask(),
                 ))
-        self.highway = NN.DataParallel(NN.Sequential(*[Highway(1025) for _ in range(2)]))
+        self.highway = NN.DataParallel(NN.Sequential(*[Highway(1024) for _ in range(2)]))
+        self.conv5 = NN.DataParallel(NN.Sequential(
+                NN.Conv1d(1024,1,kernel_size=3,stride=1,padding=1),
+                ConvMask(),
+                ))
+        
         init_weights(self.highway)
         init_weights(self.conv1)
         init_weights(self.conv2)
         init_weights(self.conv3)
         init_weights(self.conv4)
+        init_weights(self.conv5)
         init_weights(self.classifier)
         init_weights(self.encoder)
 
@@ -556,7 +565,7 @@ class Discriminator(NN.Module):
         batch_size, nfreq, maxlen = x.size()
         
         max_nframes = x.size()[2]
-        convlengths = lengths
+        convlengths = length
         h1 = self.conv1(x)
         h2 = self.conv2(h1)
         h3 = self.conv3(h2)
@@ -564,33 +573,20 @@ class Discriminator(NN.Module):
         x = h4
         conv_acts = [h1,h2,h3,h4]
         x = x.permute(0,2,1)
-        x = self.highway(x.contiguous().view(batch_size * max_nframes, -1)).view(batch_size, max_nframes, -1)
+        x = self.highway(x.contiguous().view(batch_size * max_nframes, -1))
+        x = x.view(batch_size, max_nframes,-1)
+        x = x.permute(0,2,1)
+        x = self.conv5(x)
+        x = x.view(batch_size,-1)
 
-        xold = x
+        ranking = self.encoder(x).squeeze()
+        classifier_out = self.classifier(x).squeeze()
 
-        initial_state = (
-                tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
-                tovar(T.zeros(num_layers * 2, batch_size, state_size // 2)),
-                )
-        nframes = length
-        #x = x.view(32, nframes_max, frame_size)
-        max_nframes = x.size()[1]
-        x2 = x.permute(1,0,2)
-        lstm_out, (h, _) = dynamic_rnn(self.rnn, x2, nframes, initial_state)
-        lstm_out = lstm_out.permute(1, 0, 2)
-        max_nframes = lstm_out.size()[1]
+        #code_unitnorm = code / (code.norm(2, 1, keepdim=True) + 1e-4)
+        #c_unitnorm = c / (c.norm(2, 1, keepdim=True) + 1e-4)
+        #ranking = T.bmm(code_unitnorm.unsqueeze(1), c_unitnorm.unsqueeze(2)).squeeze()
 
-        classifier_out = self.classifier(lstm_out).view(batch_size, max_nframes)
-
-        h = h.permute(1, 0, 2)
-        h = h[:, -2:].contiguous().view(batch_size, state_size)
-        code = self.encoder(h)
-
-        code_unitnorm = code / (code.norm(2, 1, keepdim=True) + 1e-4)
-        c_unitnorm = c / (c.norm(2, 1, keepdim=True) + 1e-4)
-        ranking = T.bmm(code_unitnorm.unsqueeze(1), c_unitnorm.unsqueeze(2)).squeeze()
-
-        return classifier_out, ranking, nframes, conv_acts
+        return classifier_out, ranking, conv_acts
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--critic_iter', default=1000, type=int)
@@ -690,7 +686,8 @@ d = Discriminator(
         state_size=args.dstatesize,
         embed_size=args.embedsize,
         num_layers=args.rnnd_layers,
-        nfreq = args.nfreq).cuda()
+        nfreq = args.nfreq,
+        maxlen = args.maxlen).cuda()
 
 def spect_to_audio(spect):
     spect = NP.clip(spect, a_min = 0, a_max=None)
@@ -808,16 +805,14 @@ l = 10
 baseline = None
 
 def discriminate(d, data, length, embed, target, real):
-    cls, rank, nframes, _ = d(data, length, embed)
+    cls, rank, _ = d(data, length, embed)
     target = tovar(T.ones(*(cls.size())) * target)
-    weight = length_mask(cls.size(), nframes)
-    loss_c = binary_cross_entropy_with_logits_per_sample(cls, target, weight=weight) / nframes.float()
+    loss_c = binary_cross_entropy_with_logits(cls, target)
     loss_c = loss_c.mean()
-    correct = ((cls.data > 0) if real else (cls.data < 0)).float() * weight.data
+    correct = ((cls.data > 0) if real else (cls.data < 0)).float()
     correct = correct.sum()
-    num = weight.data.sum()
-    acc = correct / num
-    return cls, nframes, target, weight, loss_c, rank, acc
+    acc = correct / data.size()[0]
+    return cls, length, target, weight, loss_c, rank, acc
 init_data_loader = 1
 if __name__ == '__main__':
     if modelnameload:
@@ -956,16 +951,14 @@ if __name__ == '__main__':
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data += noise
                 
-                cls_g, rank_g, nframes_g, conv_acts_g = d(fake_data, fake_len, embed_d)
-                _, rank_d, nframes_d, conv_acts_d = d(real_data, real_len, embed_d)
+                cls_g, rank_g, conv_acts_g = d(fake_data, fake_len, embed_d)
+                _, rank_d, conv_acts_d = d(real_data, real_len, embed_d)
                 if args.g_optim == 'boundary_seeking':
                     target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
                 else:
                     target = tovar(T.zeros(*(cls_g.size())))            
-                weight = length_mask(cls_g.size(), nframes_g)
                 nframes_max = fake_len.data.max()
-                weight_r = length_mask((batch_size, nframes_max), fake_len)
-                _loss = binary_cross_entropy_with_logits_per_sample(cls_g, target, weight=weight) / nframes_g.float()
+                _loss = binary_cross_entropy_with_logits(cls_g, target)
                 _loss *= lambda_loss_g
                 loss_fp_data = 0
                 loss_fp_conv = 0
@@ -995,16 +988,16 @@ if __name__ == '__main__':
                             ),
                         gen_iter
                         )
-                reward = (reward - baseline).unsqueeze(1) * weight_r.data
+                reward = (reward - baseline)
                 average_reward = reward.abs().mean()
                 reward = reward/average_reward
                 
-                reward_scatter.append(reward[:,0].cpu().numpy())
+                reward_scatter.append(reward.cpu().numpy())
                 length_scatter.append(fake_len.cpu().data.numpy())
                 
                 _loss = _loss.mean()
                 _rank_g = -(rank_g).mean()
-                stop_raw.reinforce(lambda_pg_g * reward)
+                stop_raw.reinforce(lambda_pg_g * reward.unsqueeze(1))
                 # Debug the gradient norms
                 opt_g.zero_grad()
                 _loss.backward(retain_graph=True)
