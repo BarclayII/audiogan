@@ -559,15 +559,15 @@ class Discriminator(NN.Module):
                 ))
         self.conv1 = NN.DataParallel(NN.Sequential(
                 ConvMask(),
-                Conv1dKernels(1025, 512, kernel_sizes=[1,1,1,3], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv2 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,1,1,3], stride=1),
+                Conv1dKernels(2048, 512, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv3 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,1,1,3], stride=1),
+                Conv1dKernels(2048, 512, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv4 = NN.DataParallel(NN.Sequential(
@@ -613,6 +613,7 @@ class Discriminator(NN.Module):
         x = x.permute(0,2,1)
         x = self.conv5(x)
         x = x.view(batch_size,-1)
+        x = self.ConvMask(x.unsqueeze(2)).squeeze()
 
         ranking = self.encoder(x).squeeze()
         classifier_out = self.classifier(x).squeeze()
@@ -634,8 +635,8 @@ parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size'
 parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
-parser.add_argument('--dlr', type=float, default=1e-5)
-parser.add_argument('--glr', type=float, default=1e-5)
+parser.add_argument('--dlr', type=float, default=1e-4)
+parser.add_argument('--glr', type=float, default=1e-4)
 parser.add_argument('--modelname', type=str, default = '')
 parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
@@ -652,8 +653,8 @@ parser.add_argument('--require_acc', type=float, default=0.7)
 parser.add_argument('--lambda_pg', type=float, default=.1)
 parser.add_argument('--lambda_rank', type=float, default=.1)
 parser.add_argument('--lambda_loss', type=float, default=1)
-parser.add_argument('--lambda_fp', type=float, default=100)
-parser.add_argument('--lambda_fp_conv', type=float, default=100)
+parser.add_argument('--lambda_fp', type=float, default=.1)
+parser.add_argument('--lambda_fp_conv', type=float, default=.1)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
@@ -670,18 +671,12 @@ if len(args.modelname) > 0:
 else:
     modelnamesave = args.modelnamesave
     modelnameload = args.modelnameload
-lambda_fp_g = args.lambda_fp/10.
-lambda_fp_conv = args.lambda_fp_conv/10.
+lambda_fp_g = args.lambda_fp/1000.
+lambda_fp_conv = args.lambda_fp_conv/1000.
 lambda_pg_g = args.lambda_pg/100.
 lambda_rank_g = args.lambda_rank/10.
 lambda_loss_g = args.lambda_loss/10.
 
-
-lambda_fp_g = args.lambda_fp/10.
-lambda_fp_conv = args.lambda_fp_conv/10.
-lambda_pg_g = args.lambda_pg/1000.
-lambda_rank_g = args.lambda_rank/100.
-lambda_loss_g = args.lambda_loss/100.
 args.framesize = args.nfreq
 print modelnamesave
 print args
