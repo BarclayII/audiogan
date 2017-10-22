@@ -557,15 +557,15 @@ class Discriminator(NN.Module):
                 ))
         self.conv1 = NN.DataParallel(NN.Sequential(
                 ConvMask(),
-                Conv1dKernels(1025, 512, kernel_sizes=[1,3,3,5], stride=1),
+                Conv1dKernels(1025, 512, kernel_sizes=[1,1,1,3], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv2 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,3,3,5], stride=1),
+                Conv1dKernels(2048, 512, kernel_sizes=[1,1,1,3], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv3 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,3,3,5], stride=1),
+                Conv1dKernels(2048, 512, kernel_sizes=[1,1,1,3], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv4 = NN.DataParallel(NN.Sequential(
@@ -578,7 +578,7 @@ class Discriminator(NN.Module):
                 NN.Conv1d(1024,1,kernel_size=3,stride=1,padding=1),
                 ConvMask(),
                 ))
-        
+        self.ConvMask = ConvMask()
         init_weights(self.highway)
         init_weights(self.conv1)
         init_weights(self.conv2)
@@ -598,10 +598,11 @@ class Discriminator(NN.Module):
         
         max_nframes = x.size()[2]
         convlengths = length
-        h1 = self.conv1(x)
-        h2 = self.conv2(h1)
-        h3 = self.conv3(h2)
-        h4 = self.conv4(h3)
+        x = self.ConvMask(x)
+        h1 = self.ConvMask(self.conv1(x))
+        h2 = self.ConvMask(self.conv2(h1))
+        h3 = self.ConvMask(self.conv3(h2))
+        h4 = self.ConvMask(self.conv4(h3))
         x = h4
         conv_acts = [h1,h2,h3,h4]
         x = x.permute(0,2,1)
@@ -628,7 +629,7 @@ parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes 
 parser.add_argument('--noisesize', type=int, default=64, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1025, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size')
-parser.add_argument('--batchsize', type=int, default=32)
+parser.add_argument('--batchsize', type=int, default=8)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
 parser.add_argument('--dlr', type=float, default=1e-5)
@@ -640,7 +641,7 @@ parser.add_argument('--just_run', type=str, default='')
 parser.add_argument('--loaditerations', type=int, default=0)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect.h5')
-parser.add_argument('--embedsize', type=int, default=32)
+parser.add_argument('--embedsize', type=int, default=16)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=24, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=10.)
@@ -649,8 +650,8 @@ parser.add_argument('--require_acc', type=float, default=0.7)
 parser.add_argument('--lambda_pg', type=float, default=.1)
 parser.add_argument('--lambda_rank', type=float, default=.1)
 parser.add_argument('--lambda_loss', type=float, default=1)
-parser.add_argument('--lambda_fp', type=float, default=.01)
-parser.add_argument('--lambda_fp_conv', type=float, default=.01)
+parser.add_argument('--lambda_fp', type=float, default=100)
+parser.add_argument('--lambda_fp_conv', type=float, default=100)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
@@ -672,6 +673,13 @@ lambda_fp_conv = args.lambda_fp_conv/10.
 lambda_pg_g = args.lambda_pg/100.
 lambda_rank_g = args.lambda_rank/10.
 lambda_loss_g = args.lambda_loss/10.
+
+
+lambda_fp_g = args.lambda_fp/10.
+lambda_fp_conv = args.lambda_fp_conv/10.
+lambda_pg_g = args.lambda_pg/1000.
+lambda_rank_g = args.lambda_rank/100.
+lambda_loss_g = args.lambda_loss/100.
 args.framesize = args.nfreq
 print modelnamesave
 print args
@@ -996,13 +1004,16 @@ if __name__ == '__main__':
                 loss_fp_conv = 0
                 for fake_act, real_act in zip(conv_acts_g, conv_acts_d):
                     for exp in [1,2,4]:
-                        loss_fp_conv += (T.abs(moment_by_index(fake_act.float(),exp, fake_len) - 
-                                      moment_by_index(real_act.float(),exp,real_len))**1.5).mean()
+                        loss_fp_conv += ((moment_by_index(fake_act.float(),exp, fake_len) - 
+                                      moment_by_index(real_act.float(),exp,real_len))**2).mean()
                 for exp in [1,2,4,6]:
-                    loss_fp_data += T.abs(moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **1.5
-                    loss_fp_data += (T.abs(moment_by_index(fake_data.float(),exp, fake_len) - 
-                                      moment_by_index(real_data.float(),exp,real_len))**1.5).mean()
-                            
+                    #loss_fp_data += T.abs(moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **1.5
+                    #loss_fp_data += (T.abs(moment_by_index(fake_data.float(),exp, fake_len) - 
+                    #                  moment_by_index(real_data.float(),exp,real_len))**1.5).mean()
+                    loss_fp_data += (moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len))**2
+                    loss_fp_data += ((moment_by_index(fake_data.float(),exp, fake_len) - 
+                                      moment_by_index(real_data.float(),exp,real_len))**2).mean()
+
                 rank_g *= lambda_rank_g
                 
                 loss = _loss - rank_g
@@ -1080,18 +1091,18 @@ if __name__ == '__main__':
                 if rank_grad_norm > 5:
                     lambda_rank_g /= 2.
                     
-                if fp_grad_norm < 1:
+                if fp_grad_norm < 2:
                     lambda_fp_g *= 1.1
-                if fp_grad_norm > 1:
+                if fp_grad_norm > 2:
                     lambda_fp_g /=1.3
-                if fp_grad_norm > 10:
+                if fp_grad_norm > 20:
                     lambda_fp_g /=2.
                     
-                if conv_fp_grad_norm < 1:
+                if conv_fp_grad_norm < 2:
                     lambda_fp_conv *= 1.1
-                if conv_fp_grad_norm > 1:
+                if conv_fp_grad_norm > 2:
                     lambda_fp_conv /=1.3
-                if conv_fp_grad_norm > 10:
+                if conv_fp_grad_norm > 20:
                     lambda_fp_conv /=2.
                     
                 if pg_grad_norm < 1:
@@ -1135,7 +1146,7 @@ if __name__ == '__main__':
                         )
                 opt_g.step()
             
-            if gen_iter % 100 == 0:
+            if gen_iter % 10 == 0:
                 add_scatterplot(d_train_writer,reward_scatter, length_scatter, gen_iter, 'scatterplot')
                 reward_scatter = []
                 length_scatter = []
