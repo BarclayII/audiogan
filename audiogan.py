@@ -496,6 +496,7 @@ class Generator(NN.Module):
         x = self.deconv2(x)
         x = self.conv1(x) + x
         x = self.relu(x)
+        x = self.ConvMask(x)
         '''
         x = self.conv0(z)
         x = self.conv1(x) + x
@@ -513,6 +514,7 @@ class Generator(NN.Module):
         '''
         stop = self.stopper_conv(x)
         stop = stop.view(batch_size,-1)
+        stop = stop / stop.abs().mean()
         stop = self.Softplus(stop)
         stop_raw = stop.multinomial()
         stop = stop_raw + 1
@@ -520,9 +522,9 @@ class Generator(NN.Module):
         x = self.conv3(x) + x
         x = self.conv3(x) + x
         convlengths = stop.squeeze()
-        x = x.permute(0,2,1)
-        x = self.ConvMask(x)
-        x = x.permute(0,2,1)
+        #x = x.permute(0,2,1)
+        #x = self.ConvMask(x)
+        #x = x.permute(0,2,1)
         stop = stop.squeeze()
         stop_raw = stop_raw
         #s = T.stack(s_list, 1)
@@ -629,7 +631,7 @@ parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes 
 parser.add_argument('--noisesize', type=int, default=64, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1025, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size')
-parser.add_argument('--batchsize', type=int, default=8)
+parser.add_argument('--batchsize', type=int, default=32)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
 parser.add_argument('--dlr', type=float, default=1e-5)
