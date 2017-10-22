@@ -194,7 +194,7 @@ class Conv1dResidualBottleKernels(NN.Module):
         NN.Module.__init__(self)
         self.infilters = infilters
         self.outfilters = outfilters
-        self.conv = Conv1dKernels(infilters, hidden_filters//4, kernel_sizes=[1,3,3,5], stride=2)
+        self.conv = Conv1dKernels(infilters, hidden_filters//4, kernel_sizes=[1,1,3,3], stride=2)
         self.convh = Conv1dKernels(hidden_filters, hidden_filters//4, kernel_sizes=[1,1,1,3], stride=1)
         self.deconv = NN.ConvTranspose1d(hidden_filters, outfilters, 4, stride=2, padding=1)
         if relu:
@@ -428,11 +428,14 @@ class Generator(NN.Module):
     def __init__(self,kernel,stride,infilters,hidden_filters,outfilters, relu = True):
         '''
         self.deconv1 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(input_size, 64, kernel_sizes=[1,1,1,3], stride=1),
+                Conv1dKernels(input_size, 128, kernel_sizes=[1,1,1,3], stride=1),
                 NN.LeakyReLU(),
-                Conv1dKernels(256, 128, kernel_sizes=[1,1,1,3], stride=1),
+                Conv1dKernels(512, 256, kernel_sizes=[1,1,1,3], stride=1),
                 NN.LeakyReLU(),
-                NN.ConvTranspose1d(512, 1024, 4, stride=2, padding=1),
+                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                NN.ConvTranspose1d(1024, 1024, 4, stride=2, padding=1),
                 NN.LeakyReLU(),
                 ))
         self.deconv2 = NN.DataParallel(NN.Sequential(
@@ -440,10 +443,9 @@ class Generator(NN.Module):
                 NN.LeakyReLU(),
                 Conv1dKernels(1024, 256, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU(),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
+                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
+                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
                 NN.ConvTranspose1d(1024, 1024, 4, stride=2, padding=1),
                 NN.LeakyReLU(),
                 ))
@@ -575,7 +577,7 @@ class Discriminator(NN.Module):
                 NN.LeakyReLU(),
                 ConvMask(),
                 ))
-        self.highway = NN.DataParallel(NN.Sequential(*[Highway(1024) for _ in range(2)]))
+        self.highway = NN.DataParallel(NN.Sequential(*[Highway(1024) for _ in range(4)]))
         self.conv5 = NN.DataParallel(NN.Sequential(
                 NN.Conv1d(1024,1,kernel_size=3,stride=1,padding=1),
                 ConvMask(),
@@ -644,7 +646,7 @@ parser.add_argument('--just_run', type=str, default='')
 parser.add_argument('--loaditerations', type=int, default=0)
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect.h5')
-parser.add_argument('--embedsize', type=int, default=16)
+parser.add_argument('--embedsize', type=int, default=64)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=24, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=10.)
