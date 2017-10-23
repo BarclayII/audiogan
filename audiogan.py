@@ -432,9 +432,11 @@ class Generator(NN.Module):
                 NN.LeakyReLU(),
                 Conv1dKernels(512, 256, kernel_sizes=[1,1,1,3], stride=1),
                 NN.LeakyReLU(),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
                 NN.ConvTranspose1d(1024, 1024, 4, stride=2, padding=1),
                 NN.LeakyReLU(),
                 ))
@@ -443,9 +445,9 @@ class Generator(NN.Module):
                 NN.LeakyReLU(),
                 Conv1dKernels(1024, 256, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU(),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
-                Conv1dResidualBottleneck(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
                 NN.ConvTranspose1d(1024, 1024, 4, stride=2, padding=1),
                 NN.LeakyReLU(),
                 ))
@@ -858,11 +860,11 @@ if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
             if args.justload != 'gen':
-                d = T.load('%s-dis-%05d' % (modelnameload, args.loaditerations))
-                e_d = T.load('%s-ed-%05d' % (modelnameload, args.loaditerations))
+                d = T.load('%s-dis-%06d' % (modelnameload, args.loaditerations))
+                e_d = T.load('%s-ed-%06d' % (modelnameload, args.loaditerations))
             if args.justload != 'dis':
-                g = T.load('%s-gen-%05d' % (modelnameload, args.loaditerations))
-                e_g = T.load('%s-eg-%05d' % (modelnameload, args.loaditerations))
+                g = T.load('%s-gen-%06d' % (modelnameload, args.loaditerations))
+                e_g = T.load('%s-eg-%06d' % (modelnameload, args.loaditerations))
 
     param_g = list(g.parameters()) + list(e_g.parameters())
     param_d = list(d.parameters()) + list(e_d.parameters())
@@ -883,7 +885,7 @@ if __name__ == '__main__':
             p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
-            if dis_iter % 1000 == 0:
+            if dis_iter % 5000 == 0:
                 args.noisescale = args.noisescale * .9
             with Timer.new('load', print_=False):
                 if init_data_loader or dis_iter % 100 == 0:
@@ -1167,8 +1169,8 @@ if __name__ == '__main__':
                             fake_sample = spect_to_audio(fake_spect)
                             add_waveform_summary(d_train_writer, cseq[batch], fake_sample, gen_iter, 'fake_waveform')
                             add_audio_summary(d_train_writer, cseq[batch], fake_sample, fake_len[batch], gen_iter, 'fake_audio')
-                    T.save(d, '%s-dis-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-                    T.save(g, '%s-gen-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-                    T.save(e_g, '%s-eg-%05d' % (modelnamesave, gen_iter + args.loaditerations))
-                    T.save(e_d, '%s-ed-%05d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(d, '%s-dis-%06d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(g, '%s-gen-%06d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(e_g, '%s-eg-%06d' % (modelnamesave, gen_iter + args.loaditerations))
+                    T.save(e_d, '%s-ed-%06d' % (modelnamesave, gen_iter + args.loaditerations))
             print 'G', gen_iter, loss_grad_norm, rank_grad_norm, pg_grad_norm, tonumpy(_loss), Timer.get('train_g')
