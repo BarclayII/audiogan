@@ -627,7 +627,7 @@ class Discriminator(NN.Module):
         return classifier_out, ranking, conv_acts
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=1000, type=int)
+parser.add_argument('--critic_iter', default=10000, type=int)
 parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
@@ -644,6 +644,7 @@ parser.add_argument('--modelnamesave', type=str, default='')
 parser.add_argument('--modelnameload', type=str, default='')
 parser.add_argument('--just_run', type=str, default='')
 parser.add_argument('--loaditerations', type=int, default=0)
+parser.add_argument('--justload', type=str, default='', help='dis or gen are only triggers')
 parser.add_argument('--logdir', type=str, default='.', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=64)
@@ -651,7 +652,7 @@ parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=24, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=10.)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
-parser.add_argument('--require_acc', type=float, default=0.7)
+parser.add_argument('--require_acc', type=float, default=0.8)
 parser.add_argument('--lambda_pg', type=float, default=.1)
 parser.add_argument('--lambda_rank', type=float, default=.1)
 parser.add_argument('--lambda_loss', type=float, default=1)
@@ -856,10 +857,12 @@ init_data_loader = 1
 if __name__ == '__main__':
     if modelnameload:
         if len(modelnameload) > 0:
-            d = T.load('%s-dis-%05d' % (modelnameload, args.loaditerations))
-            g = T.load('%s-gen-%05d' % (modelnameload, args.loaditerations))
-            e_g = T.load('%s-eg-%05d' % (modelnameload, args.loaditerations))
-            e_d = T.load('%s-ed-%05d' % (modelnameload, args.loaditerations))
+            if args.justload != 'gen':
+                d = T.load('%s-dis-%05d' % (modelnameload, args.loaditerations))
+                e_d = T.load('%s-ed-%05d' % (modelnameload, args.loaditerations))
+            if args.justload != 'dis':
+                g = T.load('%s-gen-%05d' % (modelnameload, args.loaditerations))
+                e_g = T.load('%s-eg-%05d' % (modelnameload, args.loaditerations))
 
     param_g = list(g.parameters()) + list(e_g.parameters())
     param_d = list(d.parameters()) + list(e_d.parameters())
@@ -880,7 +883,7 @@ if __name__ == '__main__':
             p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
-            if dis_iter % 500 == 0:
+            if dis_iter % 1000 == 0:
                 args.noisescale = args.noisescale * .9
             with Timer.new('load', print_=False):
                 if init_data_loader or dis_iter % 100 == 0:
@@ -1145,7 +1148,7 @@ if __name__ == '__main__':
                         )
                 opt_g.step()
             
-            if gen_iter % 10 == 0:
+            if gen_iter % 100 == 0:
                 add_scatterplot(d_train_writer,reward_scatter, length_scatter, gen_iter, 'scatterplot')
                 reward_scatter = []
                 length_scatter = []
