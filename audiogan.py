@@ -28,6 +28,7 @@ import matplotlib
 from librosa import feature
 from mailbox import _create_carefully
 matplotlib.use('Agg')
+matplotlib.rcParams.update({'font.size': 11})
 import matplotlib.pyplot as PL
 
 from PIL import Image
@@ -209,6 +210,10 @@ class Conv1dResidualBottleKernels(NN.Module):
         if self.relu != 0:
             act = self.relu(act)
         return act
+
+
+
+
 
 def check_grad(params):
     for p in params:
@@ -397,6 +402,96 @@ def calc_dists(hidden_states, hidden_state_lengths):
         #kurts_d.append((kurt(s, 0), s.std(0)))
         #kurts_d.append((kurt(k, 0), k.std(0)))
     return means_d + stds_d# + kurts_d
+
+
+style_map = {0: 'constant', 1: 'gradient'}
+def add_scatterplot_adv(writer, losses, scales, itr, log_dir, 
+                    tag = 'scatterplot', style = 0):
+    png_file = '%s/temp.png' % log_dir
+    PL.figure(figsize=(6,6))
+    PL.scatter(scales, losses)
+    PL.xlabel('scales')
+    PL.xscale('log')
+    PL.ylabel('adv loss change')
+    PL.title(style_map[style])
+    PL.legend()
+    PL.tight_layout()
+    axes = PL.gca()
+    y = np.array(losses)
+    rnge = y.max() - y.min()
+    axes.set_ylim([y.min() - rnge/100,y.max() + rnge/100])
+    PL.savefig(png_file)
+    PL.close()
+    with open(png_file, 'rb') as f:
+        imgbuf = f.read()
+    img = Image.open(png_file)
+    summary = TF.Summary.Image(
+            height=img.height,
+            width=img.width,
+            colorspace=3,
+            encoded_image_string=imgbuf
+            )
+    summary = TF.Summary.Value(tag='%s' % (tag), image=summary)
+    writer.add_summary(TF.Summary(value=[summary]), itr)
+
+
+
+
+def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g,
+                                         noisescale, g_optim, real_data, real_len, scale = 1e-2, style = 0):
+    z_raw = RNG.randn(batch_size, maxlen//4, args.noisesize)
+    z_rand = tovar(z_raw)
+    embed_g = e_g(cs, cl)
+    embed_d = e_d(cs, cl)
+    fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g, z=z_rand)
+    #noise = tovar(T.randn(*fake_data.size()) * noisescale)
+    #fake_data += noise
+    
+    cls_g, rank_g, conv_acts_g = d(fake_data, fake_len, embed_d)
+    _, rank_d, conv_acts_d = d(real_data, real_len, embed_d)
+    if g_optim == 'boundary_seeking':
+        target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
+    else:
+        target = tovar(T.zeros(*(cls_g.size())))            
+    nframes_max = fake_len.data.max()
+    _loss = binary_cross_entropy_with_logits(cls_g, target)
+    _loss *= lambda_loss_g
+    loss_fp_data = 0
+    loss_fp_conv = 0
+    for fake_act, real_act in zip(conv_acts_g, conv_acts_d):
+        for exp in [1,2,4]:
+            loss_fp_conv += ((moment_by_index(fake_act.float(),exp, fake_len) - 
+                          moment_by_index(real_act.float(),exp,real_len))**2).mean()
+    for exp in [1,2,4,6]:
+        #loss_fp_data += T.abs(moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **1.5
+        #loss_fp_data += (T.abs(moment_by_index(fake_data.float(),exp, fake_len) - 
+        #                  moment_by_index(real_data.float(),exp,real_len))**1.5).mean()
+        loss_fp_data += (moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len))**2
+        loss_fp_data += ((moment_by_index(fake_data.float(),exp, fake_len) - 
+                          moment_by_index(real_data.float(),exp,real_len))**2).mean()
+    
+    rank_g *= lambda_rank_g
+    
+    loss = _loss - rank_g + loss_fp_data + loss_fp_conv
+    
+    
+    z_adv = T.autograd.grad(cls_g, [z_rand], grad_outputs=T.ones(cls_g.size()).cuda(), 
+                           create_graph=True, retain_graph=True, only_inputs=True)[0]
+    if style==0:
+        z_adv = (z_adv > 0).type(T.FloatTensor) * scale * noisescale - \
+            (z_adv < 0).type(T.FloatTensor) * scale * noisescale
+    else:
+        print('not implemented yet 03249')
+        pass
+    '''
+        wds_adv = wds_adv * scale * wd_std / T.norm(wds_adv) * 10
+        usrs_adv = usrs_adv * scale * usr_std / T.norm(usrs_adv) * 10
+        enc_adv = enc_adv * scale * sent_std / T.norm(enc_adv) * 10
+    '''
+    z_adv = tovar(z_adv + z_rand.data)
+    return z_adv, loss
+
+
 
 class Generator(NN.Module):
     def __init__(self,
@@ -636,7 +731,7 @@ parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes 
 parser.add_argument('--noisesize', type=int, default=64, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1025, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size')
-parser.add_argument('--batchsize', type=int, default=32)
+parser.add_argument('--batchsize', type=int, default=4)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
 parser.add_argument('--dlr', type=float, default=1e-4)
@@ -845,6 +940,8 @@ dis_iter = 0
 epoch = 1
 l = 10
 baseline = None
+adv_losses = []
+adv_scales = []
 
 def discriminate(d, data, length, embed, target, real):
     cls, rank, _ = d(data, length, embed)
@@ -989,9 +1086,13 @@ if __name__ == '__main__':
                 cs = tovar(cs).long()
                 cl = tovar(cl).long()
             with Timer.new('train_g', print_=False):
+                
+                scale = float(NP.exp(-NP.random.uniform(2, 6)))
+                z, adv_loss = adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g,
+                                                     args.noisescale, args.g_optim, real_data, real_len, scale = scale)
                 embed_g = e_g(cs, cl)
                 embed_d = e_d(cs, cl)
-                fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g)
+                fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g, z = z)
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data += noise
                 
@@ -1021,6 +1122,10 @@ if __name__ == '__main__':
                 rank_g *= lambda_rank_g
                 
                 loss = _loss - rank_g
+                
+                adv_diff = adv_loss - (loss + loss_fp_data + loss_fp_conv)
+                adv_losses.append(adv_diff)
+                adv_scales.append(scale)
                 
                 reward = -loss.data# - loss_fp_len.data
                 baseline = reward.mean() if baseline is None else baseline * 0.5 + reward.mean() * 0.5
@@ -1151,6 +1256,14 @@ if __name__ == '__main__':
                 opt_g.step()
             
             if gen_iter % 100 == 0:
+                
+                add_scatterplot_adv(d_train_writer, adv_losses, 
+                                adv_scales, itr = gen_iter, 
+                                log_dir = args.logdir, tag = 'adversarial')
+                adv_losses = []
+                adv_scales = []
+                
+                
                 add_scatterplot(d_train_writer,reward_scatter, length_scatter, gen_iter, 'scatterplot')
                 reward_scatter = []
                 length_scatter = []
