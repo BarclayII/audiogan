@@ -440,10 +440,13 @@ def add_scatterplot_adv(writer, losses, scales, itr, log_dir,
 def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g,
                                          noisescale, g_optim, real_data, real_len, scale = 1e-2, style = 0):
     z_raw = RNG.randn(batch_size, maxlen//4, args.noisesize)
-    z_rand = tovar(z_raw).cuda()
+    z_rand = tovar(z_raw)
+    z_rand.require_grad = True
+    z_rand.requires_grad = True
     embed_g = e_g(cs, cl)
     embed_d = e_d(cs, cl)
     fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g, z=z_rand)
+    fake_len = tovar(fake_len.data)
     #noise = tovar(T.randn(*fake_data.size()) * noisescale)
     #fake_data += noise
     
@@ -475,12 +478,12 @@ def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_ra
     loss = _loss - rank_g + loss_fp_data + loss_fp_conv
     
 
-    z_adv = T.autograd.grad(cls_g, [z_rand], grad_outputs=T.ones(cls_g.size()).cuda(), 
+    z_adv = T.autograd.grad(loss, z_rand, grad_outputs=T.ones(loss.size()).cuda(), 
                            create_graph=True, retain_graph=False, only_inputs=True)[0]
 
     if style==0:
-        z_adv = (z_adv > 0).type(T.FloatTensor) * scale * noisescale - \
-            (z_adv < 0).type(T.FloatTensor) * scale * noisescale
+        z_adv = (z_adv > 0).float() * scale * noisescale - \
+            (z_adv < 0).float() * scale * noisescale
     else:
         print('not implemented yet 03249')
         pass
@@ -489,7 +492,7 @@ def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_ra
         usrs_adv = usrs_adv * scale * usr_std / T.norm(usrs_adv) * 10
         enc_adv = enc_adv * scale * sent_std / T.norm(enc_adv) * 10
     '''
-    z_adv = tovar(z_adv + z_rand.data)
+    z_adv = tovar(z_adv.data.cuda() + z_rand.data)
     return z_adv, loss
 
 
