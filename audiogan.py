@@ -255,7 +255,7 @@ class Conv1dKernels(NN.Module):
         NN.Module.__init__(self)
       
         self.convs = NN.ModuleList([NN.Conv1d(infilters, outfilters, kernel_size=kernel, 
-                                stride=1, padding=(kernel-1)/2)
+                                stride=stride, padding=(kernel-1)/2)
                         for kernel in kernel_sizes])
     
     def forward(self, x):
