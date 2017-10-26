@@ -493,7 +493,7 @@ def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_ra
         enc_adv = enc_adv * scale * sent_std / T.norm(enc_adv) * 10
     '''
     z_adv = tovar(z_adv.data.cuda() + z_rand.data)
-    return z_adv, loss
+    return z_adv, loss.data
 
 
 
@@ -1127,7 +1127,7 @@ if __name__ == '__main__':
                 
                 loss = _loss - rank_g
                 
-                adv_diff = adv_loss - (loss + loss_fp_data + loss_fp_conv)
+                adv_diff = adv_loss - (loss + loss_fp_data + loss_fp_conv).data
                 adv_losses.append(adv_diff)
                 adv_scales.append(scale)
                 
