@@ -436,7 +436,7 @@ def add_scatterplot_adv(writer, losses, scales, itr, log_dir,
 
 
 
-def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g,
+def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g, lambda_loss_g,
                                          noisescale, g_optim, real_data, real_len, scale = 1e-2, style = 0):
     z_raw = RNG.randn(batch_size, maxlen//4, args.noisesize)
     z_rand = tovar(z_raw)
@@ -492,7 +492,7 @@ def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_ra
         enc_adv = enc_adv * scale * sent_std / T.norm(enc_adv) * 10
     '''
     z_adv = tovar(z_adv.data.cuda() + z_rand.data)
-    return z_adv, loss.data[0]
+    return z_adv, _loss.mean().data[0]
 
 
 
@@ -745,7 +745,7 @@ parser.add_argument('--modelnameload', type=str, default='')
 parser.add_argument('--just_run', type=str, default='')
 parser.add_argument('--loaditerations', type=int, default=0)
 parser.add_argument('--justload', type=str, default='', help='dis or gen are only triggers')
-parser.add_argument('--logdir', type=str, default='.', help='log directory')
+parser.add_argument('--logdir', type=str, default='logs', help='log directory')
 parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=64)
 parser.add_argument('--minwordlen', type=int, default=1)
@@ -765,6 +765,12 @@ parser.add_argument('--gencatchup', type=int, default=1)
 
 args = parser.parse_args()
 args.conditional = True
+try:
+    os.mkdir(args.logdir)
+except:
+    pass
+
+
 if args.just_run not in ['', 'gen', 'dis']:
     print('just run should be empty string, gen, or dis. Other values not accepted')
     sys.exit(0)
@@ -1090,8 +1096,8 @@ if __name__ == '__main__':
                 cl = tovar(cl).long()
             with Timer.new('train_g', print_=False):
                 
-                scale = float(NP.exp(-NP.random.uniform(2, 6)))
-                z, adv_loss = adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g,
+                scale = float(NP.exp(-NP.random.uniform(3, 5)))
+                z, adv_loss = adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g, lambda_loss_g,
                                                      args.noisescale, args.g_optim, real_data, real_len, scale = scale)
                 embed_g = e_g(cs, cl)
                 embed_d = e_d(cs, cl)
@@ -1126,7 +1132,7 @@ if __name__ == '__main__':
                 
                 loss = _loss - rank_g
                 
-                adv_diff = adv_loss - (loss + loss_fp_data + loss_fp_conv).data.mean()
+                adv_diff = adv_loss - _loss.data.mean()
                 adv_losses.append(adv_diff)
                 adv_scales.append(scale)
                 
@@ -1252,6 +1258,7 @@ if __name__ == '__main__':
                                 TF.Summary.Value(tag='g_fp_data_grad_norm', simple_value=fp_grad_norm),
                                 TF.Summary.Value(tag='g_fp_conv_data_grad_norm', simple_value=conv_fp_grad_norm),
                                 TF.Summary.Value(tag='g_pg_grad_norm', simple_value=pg_grad_norm),
+                                TF.Summary.Value(tag='g_adv_loss_diff', simple_value=adv_diff),
                                 ]
                             ),
                         gen_iter
