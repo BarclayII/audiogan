@@ -414,10 +414,9 @@ def add_scatterplot_adv(writer, losses, scales, itr, log_dir,
     PL.xscale('log')
     PL.ylabel('adv loss change')
     PL.title(style_map[style])
-    PL.legend()
     PL.tight_layout()
     axes = PL.gca()
-    y = np.array(losses)
+    y = NP.array(losses)
     rnge = y.max() - y.min()
     axes.set_ylim([y.min() - rnge/100,y.max() + rnge/100])
     PL.savefig(png_file)
@@ -475,7 +474,7 @@ def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_ra
     
     rank_g *= lambda_rank_g
     
-    loss = _loss - rank_g + loss_fp_data + loss_fp_conv
+    loss = _loss.mean() - rank_g.mean() + loss_fp_data.mean() + loss_fp_conv.mean()
     
 
     z_adv = T.autograd.grad(loss, z_rand, grad_outputs=T.ones(loss.size()).cuda(), 
@@ -493,7 +492,7 @@ def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_ra
         enc_adv = enc_adv * scale * sent_std / T.norm(enc_adv) * 10
     '''
     z_adv = tovar(z_adv.data.cuda() + z_rand.data)
-    return z_adv, loss.data
+    return z_adv, loss.data[0]
 
 
 
@@ -728,7 +727,7 @@ class Discriminator(NN.Module):
         return classifier_out, ranking, conv_acts
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--critic_iter', default=10000, type=int)
+parser.add_argument('--critic_iter', default=1000, type=int)
 parser.add_argument('--rnng_layers', type=int, default=2)
 parser.add_argument('--rnnd_layers', type=int, default=2)
 parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes to generate at a time for RNN')
@@ -1127,7 +1126,7 @@ if __name__ == '__main__':
                 
                 loss = _loss - rank_g
                 
-                adv_diff = adv_loss - (loss + loss_fp_data + loss_fp_conv).data
+                adv_diff = adv_loss - (loss + loss_fp_data + loss_fp_conv).data.mean()
                 adv_losses.append(adv_diff)
                 adv_scales.append(scale)
                 
