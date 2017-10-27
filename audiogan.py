@@ -78,6 +78,10 @@ class WeightNorm(NN.Module):
         self._setweights()
         return self.module.forward(*args)
 
+def adjust_learning_rate(optimizer, lr):
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
 def weight_norm(m, names):
     for name in names:
         m = torch_weight_norm(m, name)
@@ -991,6 +995,9 @@ if __name__ == '__main__':
             p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
+            if dis_iter % 10000 == 0:
+                adjust_learning_rate(opt_g, args.glr / NP.sqrt(1 + dis_iter / 10000))
+                adjust_learning_rate(opt_d, args.dlr / NP.sqrt(1 + dis_iter / 10000))
             if dis_iter % 5000 == 0:
                 args.noisescale = args.noisescale * .9
             with Timer.new('load', print_=False):
