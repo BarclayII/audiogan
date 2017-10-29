@@ -199,8 +199,8 @@ class Conv1dResidualBottleKernels(NN.Module):
         NN.Module.__init__(self)
         self.infilters = infilters
         self.outfilters = outfilters
-        self.conv = Conv1dKernels(infilters, hidden_filters//4, kernel_sizes=[1,1,3,3], stride=2)
-        self.convh = Conv1dKernels(hidden_filters, hidden_filters//4, kernel_sizes=[1,1,1,3], stride=1)
+        self.conv = Conv1dKernels(infilters, hidden_filters//4, kernel_sizes=[1,1,3,5], stride=2)
+        self.convh = Conv1dKernels(hidden_filters, hidden_filters//4, kernel_sizes=[1,1,3,3], stride=1)
         self.deconv = NN.ConvTranspose1d(hidden_filters, outfilters, 4, stride=2, padding=1)
         if relu:
             self.relu = NN.LeakyReLU()
@@ -441,7 +441,7 @@ def add_scatterplot_adv(writer, losses, scales, itr, log_dir,
 
 
 def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g, lambda_loss_g,
-                                         noisescale, g_optim, real_data, real_len, scale = 1e-2, style = 0):
+                                         noisescale, g_optim, real_data, real_len, scale = 1e-1, style = 0):
     z_raw = RNG.randn(batch_size, maxlen//4, args.noisesize)
     z_rand = tovar(z_raw)
     z_rand.require_grad = True
@@ -450,8 +450,8 @@ def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_ra
     embed_d = e_d(cs, cl)
     fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g, z=z_rand)
     fake_len = tovar(fake_len.data)
-    #noise = tovar(T.randn(*fake_data.size()) * noisescale)
-    #fake_data += noise
+    noise = tovar(T.randn(*fake_data.size()) * noisescale)
+    fake_data += noise
     
     cls_g, rank_g, conv_acts_g = d(fake_data, fake_len, embed_d)
     _, rank_d, conv_acts_d = d(real_data, real_len, embed_d)
@@ -538,18 +538,14 @@ class Generator(NN.Module):
                 Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
                 Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
                 Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
-                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
                 NN.ConvTranspose1d(1024, 1024, 4, stride=2, padding=1),
                 NN.LeakyReLU(),
                 ))
         self.deconv2 = NN.DataParallel(NN.Sequential(
                 Conv1dKernels(1024, 256, kernel_sizes=[1,1,3,3], stride=1),
                 NN.LeakyReLU(),
-                Conv1dKernels(1024, 256, kernel_sizes=[1,1,3,3], stride=1),
-                NN.LeakyReLU(),
-                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
-                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
-                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 1024, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
+                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
                 NN.ConvTranspose1d(1024, 1024, 4, stride=2, padding=1),
                 NN.LeakyReLU(),
                 ))
@@ -569,6 +565,7 @@ class Generator(NN.Module):
                 ))
         init_weights(self.deconv1)
         init_weights(self.deconv2)
+        init_weights(self.conv1)
         init_weights(self.conv2)
         init_weights(self.conv3)
         init_weights(self.stopper_conv)
@@ -602,7 +599,6 @@ class Generator(NN.Module):
         x = self.deconv2(x)
         x = self.conv1(x) + x
         x = self.relu(x)
-        x = self.ConvMask(x)
         '''
         x = self.conv0(z)
         x = self.conv1(x) + x
@@ -665,25 +661,50 @@ class Discriminator(NN.Module):
                 ))
         self.conv1 = NN.DataParallel(NN.Sequential(
                 ConvMask(),
-                Conv1dKernels(1025, 512, kernel_sizes=[1,1,3,3], stride=1),
+                Conv1dKernels(1025, 128, kernel_sizes=[1,1,3,5], stride=1),
                 NN.LeakyReLU()
                 ))
         self.conv2 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,1,3,3], stride=1),
+                Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),
                 NN.LeakyReLU()
                 ))
-        self.conv3 = NN.DataParallel(NN.Sequential(
-                Conv1dKernels(2048, 512, kernel_sizes=[1,1,3,3], stride=1),
-                NN.LeakyReLU()
-                ))
-        self.conv4 = NN.DataParallel(NN.Sequential(
-                NN.Conv1d(2048,1024,kernel_size=3,stride=1,padding=1),
+        '''
+        self.conv3 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv4 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv5 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv6 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv7 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv8 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv9 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv10 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv11 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv12 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv13 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 128, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv14 = NN.DataParallel(NN.Sequential(
+                NN.Conv1d(512,512,kernel_size=3,stride=1,padding=1),
                 NN.LeakyReLU(),
                 ConvMask(),
                 ))
-        self.highway = NN.DataParallel(NN.Sequential(*[Highway(1024) for _ in range(4)]))
-        self.conv5 = NN.DataParallel(NN.Sequential(
-                NN.Conv1d(1024,1,kernel_size=3,stride=1,padding=1),
+        '''
+        self.conv3 = NN.DataParallel(NN.Sequential(Conv1dKernels(512, 64, kernel_sizes=[1,1,3,5], stride=1),NN.LeakyReLU()))
+        self.conv4 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv5 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv6 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv7 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv8 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv9 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv10 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv11 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv12 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv13 = Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 256, hidden_filters = 512, outfilters = 256)
+        self.conv14 = NN.DataParallel(NN.Sequential(
+                NN.Conv1d(256,256,kernel_size=3,stride=1,padding=1),
+                NN.LeakyReLU(),
+                ConvMask(),
+                ))
+        self.highway = NN.DataParallel(NN.Sequential(*[Highway(256) for _ in range(2)]))
+        self.conv15 = NN.DataParallel(NN.Sequential(
+                NN.Conv1d(256,1,kernel_size=3,stride=1,padding=1),
                 ConvMask(),
                 ))
         self.ConvMask = ConvMask()
@@ -693,6 +714,16 @@ class Discriminator(NN.Module):
         init_weights(self.conv3)
         init_weights(self.conv4)
         init_weights(self.conv5)
+        init_weights(self.conv6)
+        init_weights(self.conv7)
+        init_weights(self.conv8)
+        init_weights(self.conv9)
+        init_weights(self.conv10)
+        init_weights(self.conv11)
+        init_weights(self.conv12)
+        init_weights(self.conv13)
+        init_weights(self.conv14)
+        init_weights(self.conv15)
         init_weights(self.classifier)
         init_weights(self.encoder)
 
@@ -711,13 +742,23 @@ class Discriminator(NN.Module):
         h2 = self.ConvMask(self.conv2(h1))
         h3 = self.ConvMask(self.conv3(h2))
         h4 = self.ConvMask(self.conv4(h3))
-        x = h4
-        conv_acts = [h1,h2,h3,h4]
+        h5 = self.ConvMask(self.conv5(h4))
+        h6 = self.ConvMask(self.conv6(h5))
+        h7 = self.ConvMask(self.conv7(h6))
+        h8 = self.ConvMask(self.conv8(h7))
+        h9 = self.ConvMask(self.conv9(h8))
+        h10 = self.ConvMask(self.conv10(h9))
+        h11 = self.ConvMask(self.conv11(h10))
+        h12 = self.ConvMask(self.conv12(h11))
+        h13 = self.ConvMask(self.conv13(h12))
+        h14 = self.ConvMask(self.conv14(h13))
+        x = h14
+        conv_acts = [h1,h2,h3,h4, h5, h6, h7, h8, h9, h10, h11, h12, h13,h14]
         x = x.permute(0,2,1)
         x = self.highway(x.contiguous().view(batch_size * max_nframes, -1))
         x = x.view(batch_size, max_nframes,-1)
         x = x.permute(0,2,1)
-        x = self.conv5(x)
+        x = self.conv15(x)
         x = x.view(batch_size,-1)
         x = self.ConvMask(x.unsqueeze(2)).squeeze()
 
@@ -756,7 +797,7 @@ parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=24, help='maximum sample length (0 for unlimited)')
 parser.add_argument('--noisescale', type=float, default=10.)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
-parser.add_argument('--require_acc', type=float, default=0.8)
+parser.add_argument('--require_acc', type=float, default=0.6)
 parser.add_argument('--lambda_pg', type=float, default=.1)
 parser.add_argument('--lambda_rank', type=float, default=.1)
 parser.add_argument('--lambda_loss', type=float, default=1)
