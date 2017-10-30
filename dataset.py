@@ -1,64 +1,14 @@
 
+import os
 import h5py
 import numpy.random as RNG
 import numpy as NP
-import utiltf as util
+from torch.utils.data import DataLoader, Dataset
+import torch as T
+from collections import OrderedDict
 
-def _unconditional_dataloader(batch_size, data, lower, upper, args):
-    epoch = 1
-    batch = 0
-    idx = RNG.permutation(range(lower, upper))
-    cur = 0
-
-    while True:
-        indices = []
-        for i in range(batch_size):
-            if cur == len(idx):
-                cur = 0
-                idx_set = list(set(range(lower, upper)) - set(indices))
-                idx = RNG.permutation(idx_set)
-                epoch += 1
-                batch = 0
-            indices.append(idx[cur])
-            cur += 1
-        sample = data[sorted(indices)]
-        yield [epoch, batch, NP.array(sample)[:, :args.amplitudes]] + [None] * 6
-        batch += 1
-
-def unconditional_dataloader(batch_size, args):
-    dataset = h5py.File(args.dataset)
-    data = dataset['data']
-    nsamples = data.shape[0]
-    if args.subset:
-        nsample_indices = RNG.permutation(range(nsamples))[:args.subset]
-        data = data[sorted(nsample_indices)]
-        nsamples = args.subset
-    n_train_samples = nsamples // 10 * 9
-
-    dataloader = _unconditional_dataloader(batch_size, data, 0, n_train_samples, args)
-    dataloader_val = _unconditional_dataloader(batch_size, data, n_train_samples, nsamples, args)
-
-    return None, dataloader, dataloader_val
-
-def word_to_seq(word, maxcharlen):
-    char_seq = NP.zeros(maxcharlen, dtype=NP.int32)
-    char_seq[:len(word)] = [ord(c) for c in word]
-    return char_seq
-
-def _pick_sample_from_word(key, maxlen, dataset, frame_size=None, skip_samples=False, nfreq=None):
-    sample_idx = RNG.choice(dataset[key].shape[0])
-    sample_out = NP.zeros((nfreq,maxlen))
-    length = 0
-    if not skip_samples:
-        sample_in = dataset[key][sample_idx]
-        
-        sample_len = sum(1 - NP.cumprod((sample_in.sum(0) == 0)[::-1]))
-        if sample_len > maxlen:
-            return None, None
-        length = sample_len
-
-        sample_out[:,:sample_len] = sample_in[:,:sample_len]
-    return sample_out, length
+n_fetches = 0
+n_zero_fetches = 0
 
 def transform(x):
     x[x==0] = x[x==0] + 1e-6
@@ -67,60 +17,97 @@ def transform(x):
 def invtransform(x):
     return NP.exp(x)
 
-def pick_word(maxlen, dataset, keys, maxcharlen, args, frame_size=None, skip_samples=False):
-    while True:
-        key = RNG.choice(keys)
-        sample_out, length = _pick_sample_from_word(key, maxlen, dataset, frame_size, skip_samples, args.nfreq)
-        if sample_out is not None:
-            if not skip_samples:
-                maxabs = NP.abs(sample_out).max()
-                if maxabs == 0:
-                    continue
-                sample_out = transform(sample_out)
-            break
-
-    return key, word_to_seq(key, maxcharlen), len(key), sample_out, length
-
-def pick_words(batch_size, maxlen, dataset, keys, maxcharlen, args, frame_size=None, skip_samples=False):
-    return [NP.array(a) for a in zip(*(pick_word(maxlen, dataset, keys, maxcharlen, args, frame_size, skip_samples) for _ in range(batch_size)))]
-
-def _conditional_dataloader(batch_size, dataset, maxlen, keys, args, frame_size=None):
-    epoch = 0
-    batch = 0
-    maxcharlen = max(len(k) for k in keys)
-
-    if frame_size is not None:
-        pass#maxlen = util.roundup(maxlen, frame_size)
-    while True:
-        samples = []
-        batch += 1
-        i = 0
-        picked_keys, cseq, clen, samples, lengths = pick_words(batch_size, maxlen, dataset, keys, maxcharlen, args, frame_size)
-        yield [epoch, batch, samples, lengths, picked_keys, cseq, clen]
-
-def _valid_keys(keys, args):
+def _valid_keys(keys):
     keys = [k for k in keys if not (k[-1] == '-' or k[0] == '(')]
-    keys = [k for k in keys if len(k) >= args.minwordlen]
+    keys = [k for k in keys if len(k) >= 1]
     return keys
 
-def conditional_dataloader(batch_size, args, maxlen=None, frame_size=None):
-    dataset = h5py.File(args.dataset)
-    keys = _valid_keys(dataset.keys(), args)
+def word_to_seq(word, maxcharlen):
+    char_seq = NP.zeros(maxcharlen, dtype=NP.int32)
+    char_seq[:len(word)] = [ord(c) for c in word]
+    return char_seq
+
+
+class AudioDataset(Dataset):
+    def __init__(self, directory, keys, maxlen):
+        self.directory = directory
+        self.keys = keys
+        self.maxcharlen = max(len(k) for k in keys)
+
+        datadir = [os.path.join(directory, d)
+                   for d in os.listdir(directory)
+                   if d.endswith('-data')]
+        datadir_with_keys = OrderedDict((k, os.path.join(directory, k + '-data')) for k in keys)
+        filename = os.path.join(datadir[0], '0000000.npy')
+        sample = NP.load(filename)
+        self.nfreq = sample.shape[0]
+
+        self._size = [len([f for f in os.listdir(v) if f.endswith('.npy')])
+                      for k, v in datadir_with_keys.items()]
+        self.maxlen = maxlen or max(
+                NP.load(self.get_filename(k, 0)).shape[1] for k in keys)
+        self._total_size = sum(self._size)
+        self._index_map = NP.array([0] + list(NP.cumsum(self._size)[:-1]))
+
+    def __len__(self):
+        return self._total_size
+
+    def get_filename(self, key, index):
+        return os.path.join(self.directory, key + '-data', '%07d.npy' % index)
+
+    def pick_word(self):
+        key = NP.asscalar(RNG.choice(self.keys))
+        return key, word_to_seq(key, self.maxcharlen), len(key)
+
+    def __getitem__(self, index):
+        global n_fetches, n_zero_fetches
+        n_fetches += 1
+
+        key_idx = NP.searchsorted(self._index_map, index, 'right') - 1
+        chunk_offset = index - self._index_map[key_idx]
+
+        key = NP.asscalar(self.keys[key_idx])
+        key_cseq = word_to_seq(key, self.maxcharlen)
+        key_len = len(key)
+        sample_out = NP.zeros((self.nfreq, self.maxlen))
+        sample_in = NP.load(self.get_filename(key, chunk_offset))
+        # Truncating rather than discarding
+        sample_len = min(sum(1 - NP.cumprod((sample_in.sum(0) == 0)[::-1])), self.maxlen)
+        sample_out[:, :sample_len] = sample_in[:, :sample_len]
+        if sample_len == 0:
+            n_zero_fetches += 1
+            print 'Fetches %d all zero samples out of %d samples' % n_zero_fetches, n_fetches
+        sample_out = transform(sample_out)
+
+        return key, key_cseq, key_len, sample_out, sample_len
+
+
+class AudioDataLoader(DataLoader):
+    def __init__(self, dataset, batch_size=1, num_workers=2):
+        DataLoader.__init__(self,
+                            dataset,
+                            batch_size=batch_size,
+                            shuffle=True,
+                            num_workers=num_workers,
+                            drop_last=True)
+
+    def pick_words(self):
+        samples = []
+        for _ in range(self.batch_size):
+            samples.append(self.dataset.pick_word())
+        return self.collate_fn(samples)
+
+
+def prepare(batch_size, directory, maxlen=None):
+    keys = [d[:-5] for d in os.listdir(directory) if d.endswith('-data')]
+    keys = _valid_keys(keys)
     keys = list(RNG.permutation(keys))
     n_train_keys = len(keys) // 10 * 9
-    maxlen = maxlen or max(dataset[k].shape[2] for k in keys)
 
-    dataloader = _conditional_dataloader(
-            batch_size, dataset, maxlen, keys[:n_train_keys], args, frame_size)
-    dataloader_val = _conditional_dataloader(
-            batch_size, dataset, maxlen, keys[n_train_keys:], args, frame_size)
+    train_dataset = AudioDataset(directory, keys[:n_train_keys], maxlen)
+    valid_dataset = AudioDataset(directory, keys[n_train_keys:], maxlen)
 
-    return dataset, maxlen, dataloader, dataloader_val, keys[:n_train_keys], keys[n_train_keys:]
+    train_dataloader = AudioDataLoader(train_dataset, batch_size, 4)
+    valid_dataloader = AudioDataLoader(valid_dataset, batch_size, 1)
 
-def dataloader(batch_size, args, maxlen=None, frame_size=None):
-    # Returns a generator which returns
-    # (epoch, batch, audio, word, char_seq, char_seq_len, word_wrong, char_seq_wrong, char_seq_wrong_len)
-    if not args.conditional:
-        return unconditional_dataloader(batch_size, args)
-    else:
-        return conditional_dataloader(batch_size, args, maxlen=maxlen, frame_size=frame_size)
+    return train_dataloader, valid_dataloader
