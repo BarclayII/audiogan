@@ -751,9 +751,9 @@ class Discriminator(NN.Module):
         h11 = self.ConvMask(self.conv11(h10))
         h12 = self.ConvMask(self.conv12(h11))
         h13 = self.ConvMask(self.conv13(h12))
-        h14 = self.ConvMask(self.conv14(h13))
+        h14 = self.ConvMask(self.conv14(h5))
         x = h14
-        conv_acts = [h1,h2,h3,h4, h5, h6, h7, h8, h9, h10, h11, h12, h13,h14]
+        conv_acts = [h1,h2,h3,h4, h5, h14]#, h6, h7, h8, h9, h10, h11, h12, h13,h14]
         x = x.permute(0,2,1)
         x = self.highway(x.contiguous().view(batch_size * max_nframes, -1))
         x = x.view(batch_size, max_nframes,-1)
@@ -795,14 +795,14 @@ parser.add_argument('--dataset', type=str, default='data-spect.h5')
 parser.add_argument('--embedsize', type=int, default=64)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=24, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=10.)
+parser.add_argument('--noisescale', type=float, default=2.)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
-parser.add_argument('--require_acc', type=float, default=0.6)
+parser.add_argument('--require_acc', type=float, default=0.7)
 parser.add_argument('--lambda_pg', type=float, default=.1)
 parser.add_argument('--lambda_rank', type=float, default=.1)
 parser.add_argument('--lambda_loss', type=float, default=1)
 parser.add_argument('--lambda_fp', type=float, default=.1)
-parser.add_argument('--lambda_fp_conv', type=float, default=.1)
+parser.add_argument('--lambda_fp_conv', type=float, default=.01)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=1)
@@ -1023,7 +1023,7 @@ if __name__ == '__main__':
         p.requires_grad = True
     for p in param_d:
         p.requires_grad = True
-    opt_g = T.optim.RMSprop(param_g, lr=args.glr)
+    opt_g = T.optim.RMSprop(param_g, lr=args.glr, weight_decay = 1e-8)
     opt_d = T.optim.RMSprop(param_d, lr=args.dlr,weight_decay=1e-4)
     grad_nan = 0
     g_grad_nan = 0
