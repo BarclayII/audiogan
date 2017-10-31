@@ -99,9 +99,10 @@ class LayerNorm(NN.Module):
         std = x.std(-1, keepdim=True)
         return self.gamma * (x - mean) / (std + self.eps) + self.beta
 
-def tovar(*arrs):
-    tensors = [(T.Tensor(a.astype('float32')) if isinstance(a, NP.ndarray) else a).cuda() for a in arrs]
-    vars_ = [T.autograd.Variable(t) for t in tensors]
+def tovar(*arrs, **kwargs):
+    tensors = [(T.Tensor(a.astype('float32')) if isinstance(a, NP.ndarray) else a) for a in arrs]
+    vars_ = [T.autograd.Variable(t, requires_grad=kwargs.get('requires_grad', False)).cuda()
+             if T.is_tensor(t) else t for t in tensors]
     return vars_[0] if len(vars_) == 1 else vars_
 
 
@@ -443,9 +444,7 @@ def add_scatterplot_adv(writer, losses, scales, itr, log_dir,
 def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g, lambda_loss_g,
                                          noisescale, g_optim, real_data, real_len, scale = 1e-1, style = 0):
     z_raw = RNG.randn(batch_size, maxlen//4, args.noisesize)
-    z_rand = tovar(z_raw)
-    z_rand.require_grad = True
-    z_rand.requires_grad = True
+    z_rand = tovar(z_raw, requires_grad=True)
     embed_g = e_g(cs, cl)
     embed_d = e_d(cs, cl)
     fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g, z=z_rand)
@@ -793,7 +792,7 @@ parser.add_argument('--just_run', type=str, default='')
 parser.add_argument('--loaditerations', type=int, default=0)
 parser.add_argument('--justload', type=str, default='', help='dis or gen are only triggers')
 parser.add_argument('--logdir', type=str, default='logs', help='log directory')
-parser.add_argument('--dataset', type=str, default='data-spect.h5')
+parser.add_argument('--dataset', type=str, default='/misc/vlgscratch4/ChoGroup/gq/data/audiogan-data/data-spect-per-word')
 parser.add_argument('--embedsize', type=int, default=64)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=24, help='maximum sample length (0 for unlimited)')
@@ -840,8 +839,12 @@ reward_scatter = []
 length_scatter = []
 batch_size = args.batchsize
 batch_size_massive = batch_size * 10
-dataset_h5, maxlen, dataloader, dataloader_val, keys_train, keys_val = \
-        dataset.dataloader(batch_size_massive, args, maxlen=args.maxlen, frame_size=args.framesize)
+dataloader, dataloader_val = dataset.prepare(batch_size, args.dataset, args.maxlen)
+dataloader_it = iter(dataloader)
+dataloader_val_it = iter(dataloader_val)
+maxlen = args.maxlen
+keys_train = dataloader.dataset.keys
+keys_val = dataloader_val.dataset.keys
 maxcharlen_train = max(len(k) for k in keys_train)
 
 def logdirs(logdir, modelnamesave):
@@ -971,7 +974,7 @@ def add_audio_summary(writer, word, sample, length, gen_iter, tag='audio'):
 d_train_writer = TF.summary.FileWriter(log_train_d)
 
 # Add real waveforms
-_, _, samples, lengths, cseq, cseq_fixed, clen_fixed = dataloader_val.next()
+cseq, cseq_fixed, clen_fixed, samples, lengths = tonumpy(*next(dataloader_val_it))
 samples = samples[:batch_size]
 lengths = lengths[:batch_size]
 cseq = cseq[:batch_size]
@@ -1044,20 +1047,7 @@ if __name__ == '__main__':
             if dis_iter % 5000 == 0:
                 args.noisescale = args.noisescale * .9
             with Timer.new('load', print_=False):
-                if init_data_loader or dis_iter % 100 == 0:
-                    init_data_loader = 0
-                    epoch, batch_id, _real_data_massive, \
-                        _real_len_massive, _, _cs_massive, \
-                        _cl_massive = dataloader.next()
-                    num_samples_loaded = _real_data_massive.shape[0]
-                random_indexes = NP.random.choice(
-                        num_samples_loaded, batch_size, replace = True)
-                _real_data = _real_data_massive[random_indexes]
-                _real_len = _real_len_massive[random_indexes]
-                _cs = _cs_massive[random_indexes]
-                _cl = _cl_massive[random_indexes]
-                
-                
+                _, _cs, _cl, _real_data, _real_len = tonumpy(*next(dataloader_it))
                 
             with Timer.new('train_d', print_=False):
                 noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
@@ -1140,8 +1130,7 @@ if __name__ == '__main__':
             gen_iter += 1
             
             if args.gencatchup > 1:
-                _, cs, cl, _, _ = dataset.pick_words(
-                        batch_size, maxlen, dataset_h5, keys_train, maxcharlen_train, args, skip_samples=True)
+                _, cs, cl = dataloader.pick_words()
                 cs = tovar(cs).long()
                 cl = tovar(cl).long()
             with Timer.new('train_g', print_=False):
