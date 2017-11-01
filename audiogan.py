@@ -806,7 +806,7 @@ parser.add_argument('--lambda_fp', type=float, default=.1)
 parser.add_argument('--lambda_fp_conv', type=float, default=.01)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
-parser.add_argument('--gencatchup', type=int, default=5)
+parser.add_argument('--gencatchup', type=int, default=3)
 
 
 args = parser.parse_args()
