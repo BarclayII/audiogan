@@ -630,6 +630,8 @@ class Generator(NN.Module):
         stop_raw = stop_raw
         #s = T.stack(s_list, 1)
         #p = T.stack(p_list, 1)
+
+        assert x.data.abs().max() < 1e+3
   
         return x, stop, stop_raw
 
@@ -838,8 +840,8 @@ length_scatter = []
 batch_size = args.batchsize
 batch_size_massive = batch_size * 10
 dataloader, dataloader_val = dataset.prepare(batch_size, args.dataset, args.maxlen)
-dataloader_it = iter(dataloader)
-dataloader_val_it = iter(dataloader_val)
+dataloader_it = dataset.generator(dataloader)
+dataloader_val_it = dataset.generator(dataloader_val)
 maxlen = args.maxlen
 keys_train = dataloader.dataset.keys
 keys_val = dataloader_val.dataset.keys
@@ -1063,6 +1065,8 @@ if __name__ == '__main__':
                         d, real_data, real_len, T.cat([embed_d[-1:,:], embed_d[:-1,:]],0), 0.9, True)
 
                 fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g)
+                print 'REAL  ', real_data.data.max(), real_data.data.min(), real_data.data.mean()
+                print 'FAKE D', fake_data.data.max(), fake_data.data.min(), fake_data.data.mean()
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data = tovar((fake_data + noise).data)
                 cls_g, _, _, loss_g, rank_g, acc_g = \
@@ -1139,6 +1143,7 @@ if __name__ == '__main__':
                 embed_g = e_g(cs, cl)
                 embed_d = e_d(cs, cl)
                 fake_data, fake_len, stop_raw = g(batch_size=batch_size, length=maxlen, c=embed_g, z = z)
+                print 'FAKE G', fake_data.data.max(), fake_data.data.min(), fake_data.data.mean()
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data += noise
                 

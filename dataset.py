@@ -11,8 +11,7 @@ n_fetches = 0
 n_zero_fetches = 0
 
 def transform(x):
-    x[x==0] = x[x==0] + 1e-6
-    return NP.log(x)
+    return NP.log(x + 1e-4)
 
 def invtransform(x):
     return NP.exp(x)
@@ -111,3 +110,8 @@ def prepare(batch_size, directory, maxlen=None):
     valid_dataloader = AudioDataLoader(valid_dataset, batch_size, 1)
 
     return train_dataloader, valid_dataloader
+
+def generator(dataloader):
+    while True:
+        for item in dataloader:
+            yield item
