@@ -703,7 +703,7 @@ class Discriminator(NN.Module):
                 NN.LeakyReLU(),
                 ConvMask(),
                 ))
-        self.highway = NN.DataParallel(NN.Sequential(*[Highway(256) for _ in range(2)]))
+        self.highway = NN.DataParallel(NN.Sequential(*[Highway(256) for _ in range(1)]))
         self.conv15 = NN.DataParallel(NN.Sequential(
                 NN.Conv1d(256,1,kernel_size=3,stride=1,padding=1),
                 ConvMask(),
@@ -742,6 +742,7 @@ class Discriminator(NN.Module):
         h1 = self.ConvMask(self.conv1(x))
         h2 = self.ConvMask(self.conv2(h1))
         h3 = self.ConvMask(self.conv3(h2))
+        '''
         h4 = self.ConvMask(self.conv4(h3))
         h5 = self.ConvMask(self.conv5(h4))
         h6 = self.ConvMask(self.conv6(h5))
@@ -752,9 +753,10 @@ class Discriminator(NN.Module):
         h11 = self.ConvMask(self.conv11(h10))
         h12 = self.ConvMask(self.conv12(h11))
         h13 = self.ConvMask(self.conv13(h12))
-        h14 = self.ConvMask(self.conv14(h13))
+        '''
+        h14 = self.ConvMask(self.conv14(h3))
         x = h14
-        conv_acts = [h1,h2,h3,h4, h5, h6, h7, h8, h9, h10, h11, h12, h13,h14]
+        conv_acts = [h1,h2,h3, h14]#,h4, h5, h6, h7, h8, h9, h10, h11, h12, h13,h14]
         x = x.permute(0,2,1)
         x = self.highway(x.contiguous().view(batch_size * max_nframes, -1))
         x = x.view(batch_size, max_nframes,-1)
@@ -803,10 +805,10 @@ parser.add_argument('--lambda_pg', type=float, default=.1)
 parser.add_argument('--lambda_rank', type=float, default=.1)
 parser.add_argument('--lambda_loss', type=float, default=1)
 parser.add_argument('--lambda_fp', type=float, default=.1)
-parser.add_argument('--lambda_fp_conv', type=float, default=.1)
+parser.add_argument('--lambda_fp_conv', type=float, default=.01)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
-parser.add_argument('--gencatchup', type=int, default=1)
+parser.add_argument('--gencatchup', type=int, default=3)
 
 
 args = parser.parse_args()
@@ -1028,7 +1030,7 @@ if __name__ == '__main__':
         p.requires_grad = True
     for p in param_d:
         p.requires_grad = True
-    opt_g = T.optim.RMSprop(param_g, lr=args.glr)
+    opt_g = T.optim.RMSprop(param_g, lr=args.glr, weight_decay = 1e-8)
     opt_d = T.optim.RMSprop(param_d, lr=args.dlr,weight_decay=1e-4)
     grad_nan = 0
     g_grad_nan = 0
@@ -1162,7 +1164,7 @@ if __name__ == '__main__':
                     for exp in [1,2,4]:
                         loss_fp_conv += ((moment_by_index(fake_act.float(),exp, fake_len) - 
                                       moment_by_index(real_act.float(),exp,real_len))**2).mean()
-                for exp in [1,2,4,6]:
+                for exp in [1,2,4]:
                     #loss_fp_data += T.abs(moment(fake_data.float(),exp, fake_len) - moment(real_data.float(),exp,real_len)) **1.5
                     #loss_fp_data += (T.abs(moment_by_index(fake_data.float(),exp, fake_len) - 
                     #                  moment_by_index(real_data.float(),exp,real_len))**1.5).mean()
