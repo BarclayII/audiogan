@@ -11,7 +11,7 @@ n_fetches = 0
 n_zero_fetches = 0
 
 def transform(x):
-    return NP.log(x + 1e-4)
+    return NP.log(NP.where(x == 0, 1, x))
 
 def invtransform(x):
     return NP.exp(x)

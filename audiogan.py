@@ -33,71 +33,11 @@ import matplotlib.pyplot as PL
 
 from PIL import Image
 import librosa
-
-
-## Weight norm is now added to pytorch as a pre-hook, so use that instead :)
-class WeightNorm(NN.Module):
-    append_g = '_g'
-    append_v = '_v'
-
-    def __init__(self, module, weights):
-        super(WeightNorm, self).__init__()
-        self.module = module
-        self.weights = weights
-        self._reset()
-
-    def _reset(self):
-        for name_w in self.weights:
-            w = getattr(self.module, name_w)
-
-            # construct g,v such that w = g/||v|| * v
-            g = T.norm(w)
-            v = w/g.expand_as(w)
-            g = Parameter(g.data)
-            v = Parameter(v.data)
-            name_g = name_w + self.append_g
-            name_v = name_w + self.append_v
-
-            # remove w from parameter list
-            del self.module._parameters[name_w]
-
-            # add g and v as new parameters
-            self.module.register_parameter(name_g, g)
-            self.module.register_parameter(name_v, v)
-
-    def _setweights(self):
-        for name_w in self.weights:
-            name_g = name_w + self.append_g
-            name_v = name_w + self.append_v
-            g = getattr(self.module, name_g)
-            v = getattr(self.module, name_v)
-            w = v*(g/T.norm(v)).expand_as(v)
-            setattr(self.module, name_w, w)
-
-    def forward(self, *args):
-        self._setweights()
-        return self.module.forward(*args)
+from functools import partial
 
 def adjust_learning_rate(optimizer, lr):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-
-def weight_norm(m, names):
-    for name in names:
-        m = torch_weight_norm(m, name)
-    return m
-
-class LayerNorm(NN.Module):
-    def __init__(self, features, eps=1e-6):
-        NN.Module.__init__(self)
-        self.gamma = NN.Parameter(T.ones(features))
-        self.beta = NN.Parameter(T.zeros(features))
-        self.eps = eps
-
-    def forward(self, x):
-        mean = x.mean(-1, keepdim=True)
-        std = x.std(-1, keepdim=True)
-        return self.gamma * (x - mean) / (std + self.eps) + self.beta
 
 def tovar(*arrs, **kwargs):
     tensors = [(T.Tensor(a.astype('float32')) if isinstance(a, NP.ndarray) else a) for a in arrs]
@@ -195,6 +135,7 @@ class Conv1dResidualBottleneck(NN.Module):
         if self.relu != 0:
             act = self.relu(act)
         return act
+
 class Conv1dResidualBottleKernels(NN.Module):
     def __init__(self,kernel,stride,infilters,hidden_filters,outfilters, relu = True):
         NN.Module.__init__(self)
@@ -215,10 +156,6 @@ class Conv1dResidualBottleKernels(NN.Module):
         if self.relu != 0:
             act = self.relu(act)
         return act
-
-
-
-
 
 def check_grad(params):
     for p in params:
@@ -323,7 +260,8 @@ class ConvMask(NN.Module):
     def forward(self, x):
         global convlengths
         mask = length_mask((x.size()[0], x.size()[2]),convlengths).unsqueeze(1)
-        x = x * mask
+        mask = mask.expand_as(x)
+        x = x.masked_fill((1 - mask).byte(), 0)
         return x
 
 
@@ -572,6 +510,8 @@ class Generator(NN.Module):
         self.Softplus = NN.Softplus()
         self.relu = NN.LeakyReLU()
         self.ConvMask = ConvMask()
+        self.scale = NN.Parameter(T.ones(1) * (2.5))
+        self.bias = NN.Parameter(T.zeros(1) - 3.5)
         #self.tanh_scale = NN.Parameter(T.ones(1))
         #self.tanh_bias = NN.Parameter(T.zeros(1))
     
@@ -622,6 +562,7 @@ class Generator(NN.Module):
         x = self.conv2(x)
         x = self.conv3(x) + x
         x = self.conv3(x) + x
+        x = F.softplus(self.scale) * x + self.bias
         convlengths = stop.squeeze()
         #x = x.permute(0,2,1)
         #x = self.ConvMask(x)
