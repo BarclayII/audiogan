@@ -1113,10 +1113,10 @@ if __name__ == '__main__':
             d_train_writer.add_summary(
                     TF.Summary(
                         value=[
-                            TF.Summary.Value(tag='loss_d', simple_value=loss_d),
-                            TF.Summary.Value(tag='loss_g', simple_value=loss_g),
-                            TF.Summary.Value(tag='loss_rank', simple_value=loss_rank),
-                            TF.Summary.Value(tag='loss', simple_value=loss),
+                            TF.Summary.Value(tag='loss_d', simple_value=loss_d[0]),
+                            TF.Summary.Value(tag='loss_g', simple_value=loss_g[0]),
+                            TF.Summary.Value(tag='loss_rank', simple_value=loss_rank[0]),
+                            TF.Summary.Value(tag='loss', simple_value=loss[0]),
                             TF.Summary.Value(tag='cls_d/mean', simple_value=cls_d.mean()),
                             TF.Summary.Value(tag='cls_d/std', simple_value=cls_d.std()),
                             TF.Summary.Value(tag='cls_g/mean', simple_value=cls_g.mean()),
