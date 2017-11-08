@@ -97,14 +97,18 @@ class AudioDataLoader(DataLoader):
         return self.collate_fn(samples)
 
 
-def prepare(batch_size, directory, maxlen=None):
+def prepare(batch_size, directory, maxlen=None, train_valid_split=True):
     keys = [d[:-5] for d in os.listdir(directory) if d.endswith('-data')]
     keys = _valid_keys(keys)
     keys = list(RNG.permutation(keys))
-    n_train_keys = len(keys) // 10 * 9
 
-    train_dataset = AudioDataset(directory, keys[:n_train_keys], maxlen)
-    valid_dataset = AudioDataset(directory, keys[n_train_keys:], maxlen)
+    if train_valid_split:
+        n_train_keys = len(keys) // 10 * 9
+        train_dataset = AudioDataset(directory, keys[:n_train_keys], maxlen)
+        valid_dataset = AudioDataset(directory, keys[n_train_keys:], maxlen)
+    else:
+        train_dataset = AudioDataset(directory, keys, maxlen)
+        valid_dataset = AudioDataset(directory, keys, maxlen)
 
     train_dataloader = AudioDataLoader(train_dataset, batch_size, 4)
     valid_dataloader = AudioDataLoader(valid_dataset, batch_size, 1)

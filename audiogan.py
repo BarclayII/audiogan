@@ -35,6 +35,8 @@ from PIL import Image
 import librosa
 from functools import partial
 
+from colorama import Fore, Back, Style
+
 def adjust_learning_rate(optimizer, lr):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
@@ -63,26 +65,6 @@ def log_sigmoid(x):
 def log_one_minus_sigmoid(x):
     return -x - F.softplus(-x)
 
-def binary_cross_entropy_with_logits_per_sample(input, target, weight=None):
-    if not target.is_same_size(input):
-        raise ValueError("Target size ({}) must be the same as input size ({})".format(target.size(), input.size()))
-
-    max_val = (-input).clamp(min=0)
-    loss = input - input * target + max_val + ((-max_val).exp() + (-input - max_val).exp()).log()
-
-    if weight is not None:
-        loss = loss * weight
-
-    return loss.sum(1)
-def binary_cross_entropy_with_logits(input, target):
-    if not target.is_same_size(input):
-        raise ValueError("Target size ({}) must be the same as input size ({})".format(target.size(), input.size()))
-
-    max_val = (-input).clamp(min=0)
-    loss = input - input * target + max_val + ((-max_val).exp() + (-input - max_val).exp()).log()
-
-    return loss
-
 
 def advanced_index(t, dim, index):
     return t.transpose(dim, 0)[index].transpose(dim, 0)
@@ -98,10 +80,21 @@ def length_mask(size, length):
     return weight
 
 
+def reverse(x, dim):
+    rev = tovar(T.arange(x.size()[dim] - 1, -1, -1).long())
+    return x.index_select(dim, rev)
+
+
 def create_onehot(idx, size):
     onehot = tovar(T.zeros(*size))
     onehot = onehot.scatter(1, idx.unsqueeze(1), 1)
     return onehot
+
+
+def onehot_to_ordered(onehot):
+    onehot_reverse = reverse(onehot, 1)
+    onehot_cumsum = onehot_reverse.cumsum(1)
+    return reverse(onehot_cumsum, 1)
 
 
 def gumbel_softmax(logprob):
@@ -150,9 +143,12 @@ class Conv1dResidualBottleneck(NN.Module):
         else:
             self.relu = 0
     def forward(self, x):
-        act = self.relu(self.bn1(self.conv(x)))
+        act = self.conv(x)
+        act = self.bn1(act)
+        act = self.relu(act)
         act = self.convh(act)
-        act = self.relu(self.bn2(act))
+        act = self.bn2(act)
+        act = self.relu(act)
         act = self.deconv(act) + x
         if self.relu != 0:
             act = self.relu(act)
@@ -173,22 +169,29 @@ class Conv1dResidualBottleKernels(NN.Module):
         else:
             self.relu = 0
     def forward(self, x):
-        act = self.relu(self.bn1(self.conv(x)))
+        act = self.conv(x)
+        act = self.bn1(act)
+        act = self.relu(act)
         act = self.convh(act)
-        act = self.relu(self.bn2(act))
+        act = self.bn2(act)
+        act = self.relu(act)
         act = self.deconv(act) + x
         if self.relu != 0:
             act = self.relu(act)
         return act
 
+def anynan(x):
+    return (x != x).long().data.sum() > 0
+
+def anybig(x):
+    return (x.abs() > 1e+5).long().data.sum() > 0
+
 def check_grad(params):
     for p in params:
         if p.grad is None:
             continue
-        g = p.grad.data
-        anynan = (g != g).long().sum()
-        anybig = (g.abs() > 1e+5).long().sum()
-        if anynan or anybig:
+        g = p.grad
+        if anynan(g) or anybig(g):
             return False
     return True
 
@@ -424,8 +427,8 @@ def adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_ra
     else:
         target = tovar(T.zeros(*(cls_g.size())))            
     nframes_max = fake_len.data.max()
-    _loss = binary_cross_entropy_with_logits(cls_g, target)
-    _loss += binary_cross_entropy_with_logits(len_cls_g, target)
+    _loss = F.binary_cross_entropy_with_logits(cls_g, target)
+    _loss += F.binary_cross_entropy_with_logits(len_cls_g, target)
     _loss *= lambda_loss_g
     loss_fp_data = 0
     loss_fp_conv = 0
@@ -536,6 +539,8 @@ class Generator(NN.Module):
                 NN.BatchNorm1d(2048),
                 NN.LeakyReLU(),
                 NN.Conv1d(2048,1025,kernel_size=3,stride=1,padding=1),
+                NN.BatchNorm1d(1025),
+                NN.Tanh(),
                 ))
         init_weights(self.deconv1)
         init_weights(self.deconv2)
@@ -547,7 +552,7 @@ class Generator(NN.Module):
         self.Softplus = NN.Softplus()
         self.relu = NN.LeakyReLU()
         self.ConvMask = ConvMask()
-        self.scale = NN.Parameter(T.ones(1) * (2.5))
+        self.scale = NN.Parameter(T.ones(1) * (10))
         self.bias = NN.Parameter(T.zeros(1) - 3.5)
         #self.tanh_scale = NN.Parameter(T.ones(1))
         #self.tanh_bias = NN.Parameter(T.zeros(1))
@@ -596,8 +601,8 @@ class Generator(NN.Module):
         stop_raw, stop_onehot = gumbel_softmax(stop)
         stop = stop_raw + 1
         x = self.conv2(x)
-        x = self.conv3(x) + x
-        x = self.conv3(x) + x
+        x = self.conv3(x)
+        x = x * self.scale + self.bias
         #x = F.softplus(self.scale) * x + self.bias
         #x = x.permute(0,2,1)
         #x = self.ConvMask(x)
@@ -725,6 +730,7 @@ class Discriminator(NN.Module):
 
     def forward(self, x, length, length_onehot, c, percent_used = 0.1):
         global convlengths
+        length_mask = onehot_to_ordered(length_onehot)
         frame_size = self._frame_size
         state_size = self._state_size
         num_layers = self._num_layers
@@ -737,9 +743,9 @@ class Discriminator(NN.Module):
         h1 = self.ConvMask(self.conv1(x))
         h2 = self.ConvMask(self.conv2(h1))
         h3 = self.ConvMask(self.conv3(h2))
-        '''
         h4 = self.ConvMask(self.conv4(h3))
         h5 = self.ConvMask(self.conv5(h4))
+        '''
         h6 = self.ConvMask(self.conv6(h5))
         h7 = self.ConvMask(self.conv7(h6))
         h8 = self.ConvMask(self.conv8(h7))
@@ -749,11 +755,11 @@ class Discriminator(NN.Module):
         h12 = self.ConvMask(self.conv12(h11))
         h13 = self.ConvMask(self.conv13(h12))
         '''
-        h14 = self.ConvMask(self.conv14(h3))
+        h14 = self.ConvMask(self.conv14(h5))
         x = h14
-        conv_acts = [h1,h2,h3, h14]#,h4, h5, h6, h7, h8, h9, h10, h11, h12, h13,h14]
-        x = x.permute(0,2,1)
-        x = self.highway(x.contiguous().view(batch_size * max_nframes, -1))
+        conv_acts = [h1,h2,h3, h4, h5, h14]#,h4, h5, h6, h7, h8, h9, h10, h11, h12, h13,h14]
+        x = x.permute(0,2,1).contiguous()
+        #x = self.highway(x.contiguous().view(batch_size * max_nframes, -1))
         x = x.view(batch_size, max_nframes,-1)
         x = x.permute(0,2,1)
         x = self.conv15(x)
@@ -769,7 +775,7 @@ class Discriminator(NN.Module):
         ranking = T.bmm(code_unitnorm.unsqueeze(1), c_unitnorm.unsqueeze(2)).squeeze()
 
         length_classifier_out = self.length_disc(
-                T.cat([length_onehot, c], 1)).squeeze()
+                T.cat([length_mask, c], 1)).squeeze()
 
         return classifier_out, ranking, length_classifier_out, conv_acts
 
@@ -808,6 +814,7 @@ parser.add_argument('--lambda_fp_conv', type=float, default=.01)
 parser.add_argument('--pretrain_d', type=int, default=0)
 parser.add_argument('--nfreq', type=int, default=1025)
 parser.add_argument('--gencatchup', type=int, default=3)
+parser.add_argument('--nosplit', action='store_true')
 
 
 args = parser.parse_args()
@@ -840,7 +847,7 @@ reward_scatter = []
 length_scatter = []
 batch_size = args.batchsize
 batch_size_massive = batch_size * 10
-dataloader, dataloader_val = dataset.prepare(batch_size, args.dataset, args.maxlen)
+dataloader, dataloader_val = dataset.prepare(batch_size, args.dataset, args.maxlen, not args.nosplit)
 dataloader_it = dataset.generator(dataloader)
 dataloader_val_it = dataset.generator(dataloader_val)
 maxlen = args.maxlen
@@ -1006,8 +1013,8 @@ adv_scales = []
 def discriminate(d, data, length, length_onehot, embed, target, real):
     cls, rank, len_cls, _ = d(data, length, length_onehot, embed)
     target = tovar(T.ones(*(cls.size())) * target)
-    loss_c = binary_cross_entropy_with_logits(cls, target)
-    loss_l = binary_cross_entropy_with_logits(len_cls, target)
+    loss_c = F.binary_cross_entropy_with_logits(cls, target)
+    loss_l = F.binary_cross_entropy_with_logits(len_cls, target)
     loss_c = loss_c.mean()
     loss_l = loss_l.mean()
     correct = ((cls.data > 0) if real else (cls.data < 0)).float()
@@ -1056,7 +1063,9 @@ if __name__ == '__main__':
                 
             with Timer.new('train_d', print_=False):
                 noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
-                real_data = tovar(_real_data) + noise
+                real_data = tovar(_real_data)
+                print Fore.RED, Style.BRIGHT, 'REAL  ', real_data.data.max(), real_data.data.min(), real_data.data.mean(), Style.RESET_ALL
+                real_data = real_data + noise
                 real_len = tovar(_real_len).long()
                 real_len_onehot = create_onehot(real_len - 1, (batch_size, maxlen))
                 cs = tovar(_cs).long()
@@ -1067,16 +1076,24 @@ if __name__ == '__main__':
 
                 cls_d, _, _, loss_d, rank_d, acc_d = \
                         discriminate(d, real_data, real_len, real_len_onehot, embed_d, 0.9, True)
+                assert not (anynan(cls_d) or anybig(cls_d))
+                assert not (anynan(loss_d) or anybig(loss_d))
+                assert not (anynan(rank_d) or anybig(rank_d))
                 cls_d_x, _, _, _, rank_d_x, acc_d_x = discriminate(
                         d, real_data, real_len, real_len_onehot, T.cat([embed_d[-1:,:], embed_d[:-1,:]],0), 0.9, True)
+                assert not (anynan(cls_d_x) or anybig(cls_d_x))
+                assert not (anynan(rank_d_x) or anybig(rank_d_x))
 
                 fake_data, fake_len, stop_raw, fake_len_onehot = g(batch_size=batch_size, length=maxlen, c=embed_g)
-                print 'REAL  ', real_data.data.max(), real_data.data.min(), real_data.data.mean()
-                print 'FAKE D', fake_data.data.max(), fake_data.data.min(), fake_data.data.mean()
+                print Fore.RED, Style.BRIGHT, 'FAKE D', fake_data.data.max(), fake_data.data.min(), fake_data.data.mean(), Style.RESET_ALL
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data = tovar((fake_data + noise).data)
+                assert not (anynan(fake_data) or anybig(fake_data))
                 cls_g, _, _, loss_g, rank_g, acc_g = \
                         discriminate(d, fake_data, fake_len, fake_len_onehot, embed_d, 0, False)
+                assert not (anynan(cls_g) or anybig(cls_g))
+                assert not (anynan(loss_g) or anybig(loss_g))
+                assert not (anynan(rank_g) or anybig(rank_g))
 
                 loss_rank = ((1 - rank_d + rank_d_x).clamp(min=0)).mean()
                 loss = loss_d + loss_g + loss_rank/10
@@ -1117,8 +1134,10 @@ if __name__ == '__main__':
                     )
 
             accs = [acc_d, acc_g]
-            if dis_iter % 10 == 0:
+            if dis_iter % 1 == 0:
+                print Fore.RED, Style.BRIGHT
                 print 'D', epoch, dis_iter, loss, ';'.join('%.03f' % a for a in accs), Timer.get('load'), Timer.get('train_d')
+                print Style.RESET_ALL
                 print 'lengths'
                 print 'fake', list(fake_len.data)
                 print 'real', list(real_len.data)
@@ -1144,25 +1163,31 @@ if __name__ == '__main__':
             with Timer.new('train_g', print_=False):
                 
                 scale = float(NP.exp(-NP.random.uniform(3, 5)))
-                z, adv_loss = adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g, lambda_loss_g,
-                                                     args.noisescale, args.g_optim, real_data, real_len, real_len_onehot, scale = scale)
+                #z, adv_loss = adversarially_sample_z(g, batch_size, maxlen, e_g, e_d, cs, cl, d, lambda_rank_g, lambda_loss_g,
+                #                                     args.noisescale, args.g_optim, real_data, real_len, real_len_onehot, scale = scale)
                 embed_g = e_g(cs, cl)
                 embed_d = e_d(cs, cl)
-                fake_data, fake_len, stop_raw, fake_len_onehot = g(batch_size=batch_size, length=maxlen, c=embed_g, z = z)
+                fake_data, fake_len, stop_raw, fake_len_onehot = g(batch_size=batch_size, length=maxlen, c=embed_g, z=None)
+                print Fore.GREEN, Style.BRIGHT
                 print 'FAKE G', fake_data.data.max(), fake_data.data.min(), fake_data.data.mean()
-                assert fake_data.data.mean() is not NP.nan
+                print 'SCALE:', tonumpy(g.scale), 'BIAS:', tonumpy(g.bias)
+                print Style.RESET_ALL
+                assert not (anynan(fake_data) or anybig(fake_data))
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data += noise
                 
                 cls_g, rank_g, len_cls_g, conv_acts_g = d(fake_data, fake_len, fake_len_onehot, embed_d)
+                assert not (anynan(cls_g) or anybig(cls_g))
+                assert not (anynan(len_cls_g) or anybig(len_cls_g))
+                assert not (anynan(rank_g) or anybig(rank_g))
                 _, rank_d, _, conv_acts_d = d(real_data, real_len, real_len_onehot, embed_d)
                 if args.g_optim == 'boundary_seeking':
                     target = tovar(T.ones(*(cls_g.size())) * 0.5)   # TODO: add logZ estimate, may be unnecessary
                 else:
                     target = tovar(T.zeros(*(cls_g.size())))            
                 nframes_max = fake_len.data.max()
-                _loss = binary_cross_entropy_with_logits(cls_g, target)
-                _loss += binary_cross_entropy_with_logits(len_cls_g, target)
+                _loss = F.binary_cross_entropy_with_logits(cls_g, target)
+                _loss += F.binary_cross_entropy_with_logits(len_cls_g, target)
                 _loss *= lambda_loss_g
                 loss_fp_data = 0
                 loss_fp_conv = 0
@@ -1181,9 +1206,9 @@ if __name__ == '__main__':
                 rank_g *= lambda_rank_g
                 loss = _loss - rank_g
 
-                adv_diff = adv_loss - _loss.data.mean()
-                adv_losses.append(adv_diff)
-                adv_scales.append(scale)
+                #adv_diff = adv_loss - _loss.data.mean()
+                #adv_losses.append(adv_diff)
+                #adv_scales.append(scale)
                 
                 length_scatter.append(fake_len.cpu().data.numpy())
                 
@@ -1218,7 +1243,7 @@ if __name__ == '__main__':
                             p.grad.data += fp_grad_dict[p]
     
                 
-                if not check_grad(param_d):
+                if not check_grad(param_g):
                     grad_nan += 1
                     print 'Gradient exploded %d times', grad_nan
                     assert grad_nan <= 0
@@ -1275,7 +1300,7 @@ if __name__ == '__main__':
                                 TF.Summary.Value(tag='g_rank_grad_norm', simple_value=rank_grad_norm),
                                 TF.Summary.Value(tag='g_fp_data_grad_norm', simple_value=fp_grad_norm),
                                 TF.Summary.Value(tag='g_fp_conv_data_grad_norm', simple_value=conv_fp_grad_norm),
-                                TF.Summary.Value(tag='g_adv_loss_diff', simple_value=adv_diff),
+                                #TF.Summary.Value(tag='g_adv_loss_diff', simple_value=adv_diff),
                                 ]
                             ),
                         gen_iter
@@ -1284,11 +1309,11 @@ if __name__ == '__main__':
             
             if gen_iter % 100 == 0:
                 
-                add_scatterplot_adv(d_train_writer, adv_losses, 
-                                adv_scales, itr = gen_iter, 
-                                log_dir = args.logdir, tag = 'adversarial')
-                adv_losses = []
-                adv_scales = []
+                #add_scatterplot_adv(d_train_writer, adv_losses, 
+                #                adv_scales, itr = gen_iter, 
+                #                log_dir = args.logdir, tag = 'adversarial')
+                #adv_losses = []
+                #adv_scales = []
                 
                 
                 #add_scatterplot(d_train_writer,reward_scatter, length_scatter, gen_iter, 'scatterplot')
