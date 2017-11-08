@@ -103,10 +103,10 @@ def gumbel_softmax(logprob):
     a backprop'able one-hot vector from that sample.
     '''
     g = tovar(-T.log(-T.log(T.rand(logprob.size()))))
-    logprob = F.log_softmax((logprob + g) * 5)
-    argmax = logprob.exp().max(1)[1]
-    onehot = create_onehot(argmax, logprob.size())
-    onehot = (onehot - logprob).detach() + logprob
+    prob = F.softmax((logprob + g) * 5)
+    argmax = prob.max(1)[1]
+    onehot = create_onehot(argmax, prob.size())
+    onehot = (onehot - prob).detach() + prob
 
     return argmax, onehot
 
@@ -613,6 +613,7 @@ class Generator(NN.Module):
         #p = T.stack(p_list, 1)
 
         assert x.data.abs().max() < 1e+3
+        assert not (anynan(stop_onehot) or anybig(stop_onehot))
   
         return x, stop, stop_raw, stop_onehot
 
