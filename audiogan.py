@@ -102,7 +102,11 @@ def gumbel_softmax(logprob):
     Returns approximate sample from given log-probabilities, as well as
     a backprop'able one-hot vector from that sample.
     '''
-    g = tovar(-T.log(-T.log(T.rand(logprob.size()))))
+    while True:
+        g = T.rand(logprob.size())
+        if (g == 0).long().sum() == 0:
+            break
+    g = tovar(-T.log(-T.log(g)))
     prob = F.softmax((logprob + g) * 5)
     argmax = prob.max(1)[1]
     onehot = create_onehot(argmax, prob.size())
