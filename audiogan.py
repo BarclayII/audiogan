@@ -104,13 +104,14 @@ def gumbel_softmax(logprob):
     '''
     while True:
         g = T.rand(logprob.size())
-        if (g == 0).long().sum() == 0:
+        if (g == 0).long().sum() == 0 and (g == 1).long().sum() == 0:
             break
     g = tovar(-T.log(-T.log(g)))
     prob = F.softmax((logprob + g) * 5)
     argmax = prob.max(1)[1]
     onehot = create_onehot(argmax, prob.size())
     onehot = (onehot - prob).detach() + prob
+    assert not anynan(onehot)
 
     return argmax, onehot
 
@@ -599,6 +600,7 @@ class Generator(NN.Module):
         x = self.conv3(x) + x
         x = self.conv3(x) + x
         '''
+        pre_stop = x
         stop = self.stopper_conv(x)
         stop = stop.view(batch_size,-1)
         stop = F.log_softmax(stop)
@@ -617,7 +619,8 @@ class Generator(NN.Module):
         #p = T.stack(p_list, 1)
 
         assert x.data.abs().max() < 1e+3
-        assert not (anynan(stop_onehot) or anybig(stop_onehot))
+        assert not anynan(x)
+        assert not anynan(stop_onehot)
   
         return x, stop, stop_raw, stop_onehot
 
@@ -770,9 +773,11 @@ class Discriminator(NN.Module):
         x = self.conv15(x)
         x = x.view(batch_size,-1)
         x = self.ConvMask(x.unsqueeze(2)).squeeze()
+        self._x = x
 
         # We are treating the vectors as having fixed length here
         code = self.encoder(x).squeeze()
+        self._code = code
         classifier_out = self.classifier(x).squeeze()
 
         code_unitnorm = code / (code.norm(2, 1, keepdim=True) + 1e-4)
@@ -781,6 +786,11 @@ class Discriminator(NN.Module):
 
         length_classifier_out = self.length_disc(
                 T.cat([length_mask, c], 1)).squeeze()
+
+        assert not anynan(length_classifier_out)
+        assert not anynan(classifier_out)
+        assert not anynan(ranking)
+        assert all(not anynan(a) for a in conv_acts)
 
         return classifier_out, ranking, length_classifier_out, conv_acts
 
@@ -1103,7 +1113,7 @@ if __name__ == '__main__':
                 loss_rank = ((1 - rank_d + rank_d_x).clamp(min=0)).mean()
                 loss = loss_d + loss_g + loss_rank/10
                 opt_d.zero_grad()
-                loss.backward()
+                loss.backward(retain_graph=True)
                 if not check_grad(param_d):
                     grad_nan += 1
                     print 'Gradient exploded %d times', grad_nan
@@ -1224,18 +1234,24 @@ if __name__ == '__main__':
                 _loss.backward(retain_graph=True)
                 loss_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 loss_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+                assert check_grad(param_g)
                 opt_g.zero_grad()
                 _rank_g.backward(T.Tensor([1]).cuda(), retain_graph=True)
                 rank_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 rank_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+                assert check_grad(param_g)
                 opt_g.zero_grad()
                 loss_fp_data.backward(T.Tensor([lambda_fp_g]).cuda(), retain_graph=True)
                 fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+                assert check_grad(param_g)
+                '''
                 opt_g.zero_grad()
                 loss_fp_conv.backward(T.Tensor([lambda_fp_conv]).cuda(), retain_graph=True)
                 conv_fp_grad_dict = {p: p.grad.data.clone() for p in param_g if p.grad is not None}
                 conv_fp_grad_norm = sum(T.norm(p.grad.data) for p in param_g if p.grad is not None)
+                assert check_grad(param_g)
+                '''
                 
                 # Do the real thing
                 for p in param_g:
@@ -1270,13 +1286,14 @@ if __name__ == '__main__':
                     lambda_fp_g /=1.3
                 if fp_grad_norm > 20:
                     lambda_fp_g /=2.
-                    
+                '''
                 if conv_fp_grad_norm < 2:
                     lambda_fp_conv *= 1.1
                 if conv_fp_grad_norm > 2:
                     lambda_fp_conv /=1.3
                 if conv_fp_grad_norm > 20:
                     lambda_fp_conv /=2.
+                '''
                     
                 if loss_grad_norm < 2:
                     lambda_loss_g *= 1.2
@@ -1304,7 +1321,7 @@ if __name__ == '__main__':
                                 TF.Summary.Value(tag='g_loss_grad_norm', simple_value=loss_grad_norm),
                                 TF.Summary.Value(tag='g_rank_grad_norm', simple_value=rank_grad_norm),
                                 TF.Summary.Value(tag='g_fp_data_grad_norm', simple_value=fp_grad_norm),
-                                TF.Summary.Value(tag='g_fp_conv_data_grad_norm', simple_value=conv_fp_grad_norm),
+                                #TF.Summary.Value(tag='g_fp_conv_data_grad_norm', simple_value=conv_fp_grad_norm),
                                 #TF.Summary.Value(tag='g_adv_loss_diff', simple_value=adv_diff),
                                 ]
                             ),
