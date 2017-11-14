@@ -801,7 +801,7 @@ parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes 
 parser.add_argument('--noisesize', type=int, default=64, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1025, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size')
-parser.add_argument('--batchsize', type=int, default=4)
+parser.add_argument('--batchsize', type=int, default=8)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
 parser.add_argument('--dlr', type=float, default=1e-4)
@@ -1056,7 +1056,7 @@ if __name__ == '__main__':
         p.requires_grad = True
     for p in param_d:
         p.requires_grad = True
-    opt_g = T.optim.RMSprop(param_g, lr=args.glr, weight_decay = 1e-8)
+    opt_g = T.optim.RMSprop(param_g, lr=args.glr, weight_decay = 1e-7)
     opt_d = T.optim.RMSprop(param_d, lr=args.dlr,weight_decay=1e-4)
     grad_nan = 0
     g_grad_nan = 0
@@ -1069,7 +1069,7 @@ if __name__ == '__main__':
             p.requires_grad = True
         for j in range(args.critic_iter):
             dis_iter += 1
-            if dis_iter % 10000 == 0:
+            if dis_iter % 100 == 0:
                 adjust_learning_rate(opt_g, args.glr / NP.sqrt(1 + dis_iter / 10000))
                 adjust_learning_rate(opt_d, args.dlr / NP.sqrt(1 + dis_iter / 10000))
             if dis_iter % 5000 == 0:
