@@ -514,7 +514,6 @@ class Generator(NN.Module):
                 Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
                 Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
                 Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
-                Conv1dResidualBottleKernels(kernel=3, stride=2, infilters = 1024, hidden_filters = 2048, outfilters = 1024),
                 NN.ConvTranspose1d(1024, 1024, 4, stride=2, padding=1),
                 NN.BatchNorm1d(1024),
                 NN.LeakyReLU(),
@@ -802,7 +801,7 @@ parser.add_argument('--framesize', type=int, default=200, help='# of amplitudes 
 parser.add_argument('--noisesize', type=int, default=64, help='noise vector size')
 parser.add_argument('--gstatesize', type=int, default=1025, help='RNN state size')
 parser.add_argument('--dstatesize', type=int, default=512, help='RNN state size')
-parser.add_argument('--batchsize', type=int, default=32)
+parser.add_argument('--batchsize', type=int, default=4)
 parser.add_argument('--dgradclip', type=float, default=1)
 parser.add_argument('--ggradclip', type=float, default=1)
 parser.add_argument('--dlr', type=float, default=1e-4)
@@ -818,7 +817,7 @@ parser.add_argument('--dataset', type=str, default='/misc/vlgscratch4/ChoGroup/g
 parser.add_argument('--embedsize', type=int, default=64)
 parser.add_argument('--minwordlen', type=int, default=1)
 parser.add_argument('--maxlen', type=int, default=24, help='maximum sample length (0 for unlimited)')
-parser.add_argument('--noisescale', type=float, default=10.)
+parser.add_argument('--noisescale', type=float, default=1.)
 parser.add_argument('--g_optim', default = 'boundary_seeking')
 parser.add_argument('--require_acc', type=float, default=0.6)
 parser.add_argument('--lambda_pg', type=float, default=.1)
@@ -1025,14 +1024,16 @@ baseline = None
 adv_losses = []
 adv_scales = []
 
-def discriminate(d, data, length, length_onehot, embed, target, real):
+def discriminate(d, data, length, length_onehot, embed, target, real=False):
     cls, rank, len_cls, _ = d(data, length, length_onehot, embed)
     target = tovar(T.ones(*(cls.size())) * target)
     loss_c = F.binary_cross_entropy_with_logits(cls, target)
     loss_l = F.binary_cross_entropy_with_logits(len_cls, target)
     loss_c = loss_c.mean()
     loss_l = loss_l.mean()
-    correct = ((cls.data > 0) if real else (cls.data < 0)).float()
+    pos = (cls.data > 0).float()
+    target_pos = (target.data > 0).float()
+    correct = pos * target_pos + (1-pos) * (1-target_pos)
     correct = correct.sum()
     acc = correct / data.size()[0]
     return cls, length, target, loss_c + loss_l, rank, acc
@@ -1077,6 +1078,7 @@ if __name__ == '__main__':
                 _, _cs, _cl, _real_data, _real_len = tonumpy(*next(dataloader_it))
                 
             with Timer.new('train_d', print_=False):
+                d.train()
                 noise = tovar(RNG.randn(*_real_data.shape) * args.noisescale)
                 real_data = tovar(_real_data)
                 print Fore.RED, Style.BRIGHT, 'REAL  ', real_data.data.max(), real_data.data.min(), real_data.data.mean(), Style.RESET_ALL
@@ -1089,6 +1091,33 @@ if __name__ == '__main__':
                 embed_d = e_d(cs, cl)
                 embed_g = e_g(cs, cl)
 
+                fake_data, fake_len, stop_raw, fake_len_onehot = g(batch_size=batch_size, length=maxlen, c=embed_g)
+                print Fore.RED, Style.BRIGHT, 'FAKE D', fake_data.data.max(), fake_data.data.min(), fake_data.data.mean(), Style.RESET_ALL
+                noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
+                fake_data = tovar((fake_data + noise).data)
+                assert not (anynan(fake_data) or anybig(fake_data))
+                embed_d_shifted = T.cat([embed_d[-1:,:], embed_d[:-1,:]],0)
+                all_data = T.cat((fake_data, real_data, real_data), 0)
+                all_len = T.cat((fake_len, real_len, real_len))
+                all_len_onehot = T.cat((fake_len_onehot, real_len_onehot, real_len_onehot))
+                embed_d = T.cat((embed_d, embed_d, embed_d),0)
+                cls_all, _, _, loss_all, rank_all, acc_all = discriminate(
+                        d, all_data, all_len, all_len_onehot, embed_d,
+                        T.cat((T.zeros(fake_data.size(0)), T.ones(real_data.size(0)*2) * .9), 0)
+                        )
+                break1 = fake_data.size(0)
+                break2 = fake_data.size(0) + real_data.size(0)
+                cls_g, cls_d, cls_d_x = cls_all[:break1], cls_all[break1:break2], cls_all[break2:]
+                loss_g =  loss_d = loss_all
+                rank_g, rank_d, rank_d_x = rank_all[0], rank_all[1], rank_all[2]
+                acc_g = acc_d = acc_d_x = acc_all
+                '''
+                cls_g, _, _, loss_g, rank_g, acc_g = \
+                        discriminate(d, fake_data, fake_len, fake_len_onehot, embed_d, 0, False)
+                assert not (anynan(cls_g) or anybig(cls_g))
+                assert not (anynan(loss_g) or anybig(loss_g))
+                assert not (anynan(rank_g) or anybig(rank_g))
+                
                 cls_d, _, _, loss_d, rank_d, acc_d = \
                         discriminate(d, real_data, real_len, real_len_onehot, embed_d, 0.9, True)
                 assert not (anynan(cls_d) or anybig(cls_d))
@@ -1098,17 +1127,7 @@ if __name__ == '__main__':
                         d, real_data, real_len, real_len_onehot, T.cat([embed_d[-1:,:], embed_d[:-1,:]],0), 0.9, True)
                 assert not (anynan(cls_d_x) or anybig(cls_d_x))
                 assert not (anynan(rank_d_x) or anybig(rank_d_x))
-
-                fake_data, fake_len, stop_raw, fake_len_onehot = g(batch_size=batch_size, length=maxlen, c=embed_g)
-                print Fore.RED, Style.BRIGHT, 'FAKE D', fake_data.data.max(), fake_data.data.min(), fake_data.data.mean(), Style.RESET_ALL
-                noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
-                fake_data = tovar((fake_data + noise).data)
-                assert not (anynan(fake_data) or anybig(fake_data))
-                cls_g, _, _, loss_g, rank_g, acc_g = \
-                        discriminate(d, fake_data, fake_len, fake_len_onehot, embed_d, 0, False)
-                assert not (anynan(cls_g) or anybig(cls_g))
-                assert not (anynan(loss_g) or anybig(loss_g))
-                assert not (anynan(rank_g) or anybig(rank_g))
+                '''
 
                 loss_rank = ((1 - rank_d + rank_d_x).clamp(min=0)).mean()
                 loss = loss_d + loss_g + loss_rank/10
@@ -1190,6 +1209,8 @@ if __name__ == '__main__':
                 assert not (anynan(fake_data) or anybig(fake_data))
                 noise = tovar(T.randn(*fake_data.size()) * args.noisescale)
                 fake_data += noise
+                
+                d.eval()
                 
                 cls_g, rank_g, len_cls_g, conv_acts_g = d(fake_data, fake_len, fake_len_onehot, embed_d)
                 assert not (anynan(cls_g) or anybig(cls_g))
